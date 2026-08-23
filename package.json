@@ -1,0 +1,31 @@
+{
+  "name": "metasight-clone-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:migrate": "prisma migrate deploy"
+  },
+  "dependencies": {
+    "@prisma/adapter-libsql": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "lunar-javascript": "^1.7.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^20.19.43",
+    "prisma": "^7.9.1",
+    "tsx": "^4.23.12",
+    "typescript": "^5"
+  }
+}

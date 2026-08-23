@@ -1,0 +1,285 @@
+import { Router } from "express";
+import fs from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import { prisma } from "../lib/prisma.js";
+import { getBaziProfile, getYearlyFlow } from "../lib/bazi.js";
+import { castHexagram } from "../lib/liuyao.js";
+import { streamChat } from "../lib/llm.js";
+import { authMiddleware, type AuthenticatedRequest } from "../middleware.js";
+
+const router = Router();
+
+const schema = z.object({
+  mode: z.enum(["kanyun", "qingting", "wenshi", "suiyuan"]),
+  message: z.string().min(1),
+  conversationId: z.string().optional().nullable(),
+});
+
+const currentYear = new Date().getFullYear();
+
+function loadPrompt(name: string): string {
+  return fs.readFileSync(
+    path.join(process.cwd(), "src/lib/prompts", `${name}.md`),
+    "utf-8"
+  );
+}
+
+function extractYear(question: string): number {
+  const q = question.replace(/今年/, String(currentYear)).replace(/明年/, String(currentYear + 1));
+  const match = q.match(/(20\d{2})/);
+  return match ? Number(match[1]) : currentYear;
+}
+
+function buildKanYunContext(profile: ReturnType<typeof getBaziProfile>, year: number) {
+  const flow = getYearlyFlow(profile, year);
+  return `
+用户主命盘：
+- 四柱：${profile.year} / ${profile.month} / ${profile.day} / ${profile.hour}
+- 日主：${profile.dayMaster.gan}${profile.dayMaster.zhi}（${profile.dayMaster.wuxing}）
+- 性别：${profile.genderLabel}
+
+${year} 年流年数据：
+- 干支：${flow.ganZhi}
+- 十神：${flow.shiShen}
+- 纳音：${flow.naYin}
+
+工具调用结果：
+- 查询命盘：主命盘
+- 查询时间流：${year}年流年${flow.ganZhi}${flow.shiShen}${flow.naYin}
+`;
+}
+
+function buildWenShiContext(hexagram: ReturnType<typeof castHexagram>) {
+  const yaoLines = hexagram.yaos
+    .map(
+      (y) =>
+        `${y.index}爻：${y.type}（${y.yin ? "阴" : "阳"}${y.changing ? "·动" : ""}）`
+    )
+    .join("\n");
+
+  return `
+起卦结果：
+- 本卦：${hexagram.originalName}（第 ${hexagram.originalNumber} 卦）
+- 变卦：${hexagram.changedName}（第 ${hexagram.changedNumber} 卦）
+- 变爻：${hexagram.changingYaos.length > 0 ? hexagram.changingYaos.join(", ") : "无"}
+
+六爻详情（从初爻到上爻）：
+${yaoLines}
+
+工具调用结果：
+- 起卦服务：已为本问题生成六爻卦象
+`;
+}
+
+function routeSuiYuan(
+  question: string,
+  hasProfile: boolean
+): "kanyun" | "qingting" | "wenshi" {
+  const q = question.toLowerCase();
+  if (/压力|累|睡不着|焦虑|抑郁|难过|伤心|烦|委屈|想哭|情绪|心情/.test(q))
+    return "qingting";
+  if (/offer|选择|该不该|能不能|要不要|决定|选哪个|合适吗|可以吗|行吗|辞职|跳槽/.test(q))
+    return "wenshi";
+  if (/运势|今年|明年|财运|桃花|工作|事业|健康|适合|方向|贵人|命盘|八字/.test(q))
+    return hasProfile ? "kanyun" : "qingting";
+  return hasProfile ? "kanyun" : "qingting";
+}
+
+router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const userId = req.user!.userId;
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.format() });
+      return;
+    }
+
+    let { mode, message, conversationId } = parsed.data;
+
+    let profile: ReturnType<typeof getBaziProfile> | null = null;
+    let profileRecord = null;
+    if (mode === "kanyun" || mode === "suiyuan") {
+      profileRecord = await prisma.profile.findFirst({
+        where: { userId, isPrimary: true },
+      });
+      if (profileRecord?.baziPillar) {
+        profile = JSON.parse(profileRecord.baziPillar);
+      }
+    }
+
+    let actualMode: typeof mode = mode;
+    let routeReason = "";
+    if (mode === "suiyuan") {
+      actualMode = routeSuiYuan(message, !!profile);
+      routeReason = `根据问题语义，已为你匹配「${
+        actualMode === "kanyun" ? "看运" : actualMode === "wenshi" ? "问事" : "倾听"
+      }」模式`;
+    }
+
+    let conversation = conversationId
+      ? await prisma.conversation.findFirst({
+          where: { id: conversationId, userId },
+        })
+      : null;
+
+    if (!conversation) {
+      conversation = await prisma.conversation.create({
+        data: {
+          userId,
+          mode: actualMode,
+          title: message.slice(0, 30),
+        },
+      });
+    } else if (mode === "suiyuan") {
+      actualMode = conversation.mode as typeof actualMode;
+      routeReason = `沿用当前对话的「${
+        actualMode === "kanyun" ? "看运" : actualMode === "wenshi" ? "问事" : "倾听"
+      }」模式`;
+    }
+
+    await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        userId,
+        role: "user",
+        content: message,
+      },
+    });
+
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { messageCount: { increment: 1 }, updatedAt: new Date() },
+    });
+
+    let systemPrompt = "";
+    let userContent = message;
+    let toolCalls: Array<{ name: string; parameters?: unknown; result?: unknown }> = [];
+
+    if (actualMode === "kanyun") {
+      systemPrompt = loadPrompt("kanYun");
+      if (!profile) {
+        res.status(400).json({ error: "NO_PROFILE", message: "看运需要先建立命盘档案" });
+        return;
+      }
+      const targetYear = extractYear(message);
+      userContent = buildKanYunContext(profile, targetYear) + "\n\n用户问题：" + message;
+      toolCalls = [
+        { name: "查询命盘", parameters: { profileId: profileRecord?.id }, result: { profile } },
+        {
+          name: "查询时间流",
+          parameters: { year: targetYear },
+          result: getYearlyFlow(profile, targetYear),
+        },
+      ];
+    } else if (actualMode === "qingting") {
+      systemPrompt = loadPrompt("qingTing");
+      userContent = `[当前模式=倾听，locale=zh，首轮对话]\n\n用户倾诉：${message}`;
+    } else if (actualMode === "wenshi") {
+      systemPrompt = loadPrompt("wenShi");
+
+      const previousAssistant = await prisma.message.findFirst({
+        where: { conversationId: conversation.id, role: "assistant" },
+        orderBy: { createdAt: "desc" },
+      });
+
+      let hexagram: ReturnType<typeof castHexagram> | null = null;
+      if (previousAssistant?.toolCalls) {
+        try {
+          const calls = JSON.parse(previousAssistant.toolCalls);
+          const existing = calls.find(
+            (c: { name: string; result?: unknown }) => c.name === "起卦服务"
+          );
+          if (existing?.result) hexagram = existing.result as ReturnType<typeof castHexagram>;
+        } catch {
+          hexagram = null;
+        }
+      }
+
+      if (!hexagram) {
+        hexagram = castHexagram(message, conversation.createdAt.getTime());
+      }
+
+      userContent = buildWenShiContext(hexagram) + "\n\n用户问题：" + message;
+      toolCalls = [
+        {
+          name: "起卦服务",
+          parameters: { question: message, seed: conversation.createdAt.getTime() },
+          result: hexagram,
+        },
+      ];
+    } else {
+      res.status(400).json({ error: "Unsupported mode" });
+      return;
+    }
+
+    const messages = [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userContent },
+    ];
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const encoder = new TextEncoder();
+    let fullContent = "";
+    let thinkingSummary = "";
+
+    res.write(
+      encoder.encode(
+        `event: meta\ndata: ${JSON.stringify({
+          conversationId: conversation.id,
+          mode: actualMode,
+          originalMode: mode,
+          routeReason,
+          toolCalls,
+        })}\n\n`
+      )
+    );
+
+    try {
+      for await (const chunk of streamChat(messages, { temperature: 0.7 })) {
+        fullContent += chunk.content;
+        if (chunk.reasoning) thinkingSummary += chunk.reasoning;
+        res.write(encoder.encode(`event: chunk\ndata: ${JSON.stringify(chunk)}\n\n`));
+      }
+    } catch (e) {
+      console.error("[chat stream error]", e);
+    }
+
+    await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        userId,
+        role: "assistant",
+        content: fullContent,
+        toolCalls: JSON.stringify(toolCalls),
+        thinkingSummary: thinkingSummary || "思考了片刻",
+      },
+    });
+
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { messageCount: { increment: 1 }, updatedAt: new Date() },
+    });
+
+    await prisma.billingRecord.create({
+      data: {
+        userId,
+        type: "interpretation",
+        amount: 0,
+        description: `${actualMode} 模式解读`,
+        conversationId: conversation.id,
+        status: "completed",
+      },
+    });
+
+    res.write(encoder.encode(`event: done\ndata: {}\n\n`));
+    res.end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+export default router;
