@@ -1,4 +1,4 @@
-import { Solar, Lunar } from "lunar-javascript";
+import { Solar } from "lunar-javascript";
 
 const GAN = ["", "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"];
 const ZHI = ["", "子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"];
@@ -83,9 +83,9 @@ export function getBaziProfile(
     shishen: { gan: lunar.getBaZiShiShenGan(), zhi: lunar.getBaZiShiShenZhi() },
     nayin: lunar.getBaZiNaYin(),
     lunarDate: {
-      year: (lunar as any).getYearInChinese(),
-      month: (lunar as any).getMonthInChinese(),
-      day: (lunar as any).getDayInChinese(),
+      year: lunar.getYearInChinese(),
+      month: lunar.getMonthInChinese(),
+      day: lunar.getDayInChinese(),
     },
     bodyStrength: "中和",
     xiYongShen: { xi: [], ji: [] },
