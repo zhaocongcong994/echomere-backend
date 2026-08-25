@@ -17,7 +17,8 @@
     "prisma:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:setup": "npm run prisma:generate && npm run db:migrate",
-    "check": "npm run build"
+    "check": "npm run build && npm test",
+    "test": "tsx --test src/lib/*.test.ts"
   },
   "dependencies": {
     "@prisma/adapter-libsql": "^7.9.1",
@@ -27,6 +28,7 @@
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "lunar-javascript": "^1.7.7",
+    "taibu-core": "^3.5.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

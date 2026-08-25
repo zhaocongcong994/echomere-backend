@@ -11,6 +11,10 @@ const schema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
   gender: z.enum(["male", "female", "other"]),
+  calendarType: z.enum(["solar", "lunar"]).default("solar"),
+  isLeapMonth: z.boolean().default(false),
+  birthPlace: z.string().optional(),
+  longitude: z.number().min(-180).max(180).optional(),
 });
 
 router.post("/", async (req, res, next) => {
@@ -21,10 +25,11 @@ router.post("/", async (req, res, next) => {
       return;
     }
 
-    const { year, month, day, hour, minute, gender } = parsed.data;
+    const { year, month, day, hour, minute, gender, calendarType, isLeapMonth, birthPlace, longitude } = parsed.data;
     const profile = getBaziProfile(
       new Date(year, month - 1, day, hour, minute),
-      gender
+      gender,
+      { calendarType, isLeapMonth, birthPlace, longitude },
     );
     res.json(profile);
   } catch (err) {

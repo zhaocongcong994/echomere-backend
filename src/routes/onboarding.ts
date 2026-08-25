@@ -27,7 +27,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
 
     const { year, month, day, hour, minute, birthLocation, gender, name } = parsed.data;
     const birthDateTime = new Date(year, month - 1, day, hour, minute);
-    const profile = getBaziProfile(birthDateTime, gender);
+    const profile = getBaziProfile(birthDateTime, gender, { birthPlace: birthLocation });
 
     await prisma.profile.updateMany({
       where: { userId: req.user!.userId, isPrimary: true },
