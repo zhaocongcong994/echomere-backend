@@ -1,104 +1,134 @@
-// 六爻起卦服务
-// 规则：3 枚铜钱投掷 6 次，从初爻到上爻
-// 3 正 = 老阴（动爻，阴变阳）; 2 正 1 反 = 少阳; 1 正 2 反 = 少阴; 3 反 = 老阳（动爻，阳变阴）
+import {
+  calculateLiuyao,
+  toLiuyaoCanonicalJson,
+  toLiuyaoCanonicalText,
+  type LiuQinType,
+  type LiuyaoOutput,
+} from "taibu-core/liuyao";
+import { HEXAGRAMS } from "taibu-core/data/hexagrams";
+
+export const LIUYAO_ENGINE = {
+  name: "taibu-core",
+  version: "3.5.0",
+  schemaVersion: 2,
+} as const;
 
 export type YaoType = "少阴" | "少阳" | "老阴" | "老阳";
 
 export interface Yao {
-  index: number; // 1-6, 1 为初爻
+  index: number;
   type: YaoType;
-  yin: boolean; // 本卦阴阳：true=阴，false=阳
-  changing: boolean; // 是否动爻
+  yin: boolean;
+  changing: boolean;
+  liuQin?: string;
+  liuShen?: string;
+  naJia?: string;
+  wuXing?: string;
+  isShiYao?: boolean;
+  isYingYao?: boolean;
+  movementLabel?: string;
+  yaoCi?: string;
 }
 
 export interface HexagramResult {
+  schemaVersion: 2;
+  engine: typeof LIUYAO_ENGINE;
   originalName: string;
   originalNumber: number;
   changedName: string;
   changedNumber: number;
   changingYaos: number[];
   yaos: Yao[];
+  yongShenTargets: LiuQinType[];
+  chart: LiuyaoOutput;
+  canonicalJson: ReturnType<typeof toLiuyaoCanonicalJson>;
+  canonicalText: string;
 }
 
-const STANDARD_HEXAGRAMS: Array<[string, string, number]> = [
-  ["111111", "乾", 1], ["000000", "坤", 2], ["100010", "屯", 3], ["010001", "蒙", 4],
-  ["111010", "需", 5], ["010111", "讼", 6], ["010000", "师", 7], ["000010", "比", 8],
-  ["111011", "小畜", 9], ["110111", "履", 10], ["111000", "泰", 11], ["000111", "否", 12],
-  ["101111", "同人", 13], ["111101", "大有", 14], ["001000", "谦", 15], ["000100", "豫", 16],
-  ["011001", "随", 17], ["100110", "蛊", 18], ["011000", "临", 19], ["000110", "观", 20],
-  ["101001", "噬嗑", 21], ["100101", "贲", 22], ["100000", "剥", 23], ["000001", "复", 24],
-  ["111001", "无妄", 25], ["100111", "大畜", 26], ["100001", "颐", 27], ["011110", "大过", 28],
-  ["010010", "坎", 29], ["101101", "离", 30], ["001110", "咸", 31], ["011100", "恒", 32],
-  ["001111", "遁", 33], ["111100", "大壮", 34], ["000101", "晋", 35], ["101000", "明夷", 36],
-  ["011101", "家人", 37], ["101110", "睽", 38], ["010011", "蹇", 39], ["110010", "解", 40],
-  ["100011", "损", 41], ["110100", "益", 42], ["011111", "夬", 43], ["111110", "姤", 44],
-  ["011011", "萃", 45], ["110110", "升", 46], ["010110", "困", 47], ["011010", "井", 48],
-  ["110101", "革", 49], ["101011", "鼎", 50], ["001010", "震", 51], ["010100", "艮", 52],
-  ["110001", "渐", 53], ["100011", "归妹", 54], ["001101", "丰", 55], ["101100", "旅", 56],
-  ["110110", "巽", 57], ["011011", "兑", 58], ["010101", "涣", 59], ["101010", "节", 60],
-  ["110011", "中孚", 61], ["001100", "小过", 62], ["010111", "既济", 63], ["101000", "未济", 64],
-];
-
-function getHexagramName(bits: string): { name: string; number: number } {
-  const found = STANDARD_HEXAGRAMS.find(([b]) => b === bits);
-  if (found) return { name: found[1], number: found[2] };
-  return { name: "未知", number: 0 };
+function hexagramNumber(name?: string): number {
+  if (!name) return 0;
+  const index = HEXAGRAMS.findIndex((hexagram) => hexagram.name === name);
+  return index >= 0 ? index + 1 : 0;
 }
 
-function seededRandom(seed: string): () => number {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash << 5) - hash + seed.charCodeAt(i);
-    hash |= 0;
-  }
-  return () => {
-    hash = (hash * 9301 + 49297) % 233280;
-    return hash / 233280;
-  };
+function toLegacyYaoType(type: number, isChanging: boolean): YaoType {
+  if (type === 0) return isChanging ? "老阴" : "少阴";
+  return isChanging ? "老阳" : "少阳";
 }
 
-export function castHexagram(seedText: string, timestamp = Date.now()): HexagramResult {
-  const rnd = seededRandom(`${seedText}-${timestamp}`);
-  const yaos: Yao[] = [];
+export function inferYongShenTargets(question: string): LiuQinType[] {
+  const targets = new Set<LiuQinType>();
+  if (/工作|事业|职位|升职|考试|录取|官司|领导|疾病|病情/.test(question)) targets.add("官鬼");
+  if (/财|收入|投资|生意|回款|妻子|女友|对象/.test(question)) targets.add("妻财");
+  if (/合同|房|车|证件|父母|长辈|消息|文书|学校/.test(question)) targets.add("父母");
+  if (/孩子|子女|宠物|医药|娱乐|解决|福气/.test(question)) targets.add("子孙");
+  if (/朋友|同事|竞争|合作|兄弟|姐妹|合伙/.test(question)) targets.add("兄弟");
+  if (targets.size === 0) targets.add("官鬼");
+  return [...targets];
+}
 
-  for (let i = 0; i < 6; i++) {
-    const r = rnd();
-    let type: YaoType;
-    if (r < 0.125) type = "老阴";
-    else if (r < 0.5) type = "少阳";
-    else if (r < 0.875) type = "少阴";
-    else type = "老阳";
+function formatLocalDateTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
 
-    const yin = type === "老阴" || type === "少阴";
-    const changing = type === "老阴" || type === "老阳";
-
-    yaos.push({
-      index: i + 1,
+/**
+ * 使用完整六爻引擎起卦。相同问题、时间戳和 seed 会得到同一卦，便于审计与复现。
+ */
+export async function castHexagram(
+  question: string,
+  timestamp = Date.now(),
+  options?: { seed?: string; yongShenTargets?: LiuQinType[] },
+): Promise<HexagramResult> {
+  const yongShenTargets = options?.yongShenTargets ?? inferYongShenTargets(question);
+  const seed = options?.seed ?? `${question}-${timestamp}`;
+  const chart = await calculateLiuyao({
+    question,
+    yongShenTargets,
+    method: "auto",
+    date: formatLocalDateTime(timestamp),
+    seed,
+    seedScope: "soothsayer-conversation",
+    detailLevel: "full",
+  });
+  const yaos = chart.fullYaos.map((yao): Yao => {
+    const type = toLegacyYaoType(yao.type, yao.isChanging);
+    return {
+      index: yao.position,
       type,
-      yin,
-      changing,
-    });
-  }
-
-  // bits 从下到上：yaos[0] 是初爻，对应字符串最右边
-  const originalBits = yaos.map((y) => (y.yin ? "0" : "1")).reverse().join("");
-  const changedBits = yaos
-    .map((y) => {
-      if (y.type === "老阴") return "1";
-      if (y.type === "老阳") return "0";
-      return y.yin ? "0" : "1";
-    })
-    .reverse()
-    .join("");
-
-  const changingYaos = yaos.filter((y) => y.changing).map((y) => y.index);
-
+      yin: type === "少阴" || type === "老阴",
+      changing: yao.isChanging,
+      liuQin: yao.liuQin,
+      liuShen: yao.liuShen,
+      naJia: yao.naJia,
+      wuXing: yao.wuXing,
+      isShiYao: yao.isShiYao,
+      isYingYao: yao.isYingYao,
+      movementLabel: yao.movementLabel,
+      yaoCi: yao.yaoCi,
+    };
+  });
   return {
-    originalName: getHexagramName(originalBits).name,
-    originalNumber: getHexagramName(originalBits).number,
-    changedName: getHexagramName(changedBits).name,
-    changedNumber: getHexagramName(changedBits).number,
-    changingYaos,
+    schemaVersion: 2,
+    engine: LIUYAO_ENGINE,
+    originalName: chart.hexagramName,
+    originalNumber: hexagramNumber(chart.hexagramName),
+    changedName: chart.changedHexagramName || "无",
+    changedNumber: hexagramNumber(chart.changedHexagramName),
+    changingYaos: yaos.filter((yao) => yao.changing).map((yao) => yao.index),
     yaos,
+    yongShenTargets,
+    chart,
+    canonicalJson: toLiuyaoCanonicalJson(chart),
+    canonicalText: toLiuyaoCanonicalText(chart),
   };
+}
+
+export function formatLiuyaoForAI(result: HexagramResult): string {
+  return [
+    `【排盘引擎】${result.engine.name} ${result.engine.version}`,
+    result.canonicalText,
+    "【事实边界】卦象、干支、六亲、六神、纳甲、世应、动爻和用神候选是计算结果；吉凶与应期属于解释性推断，必须列出依据并保留不确定性。",
+  ].join("\n\n");
 }

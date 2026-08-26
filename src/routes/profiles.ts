@@ -43,6 +43,34 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res, next) => 
   }
 });
 
+router.get("/:id", authMiddleware, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { id } = req.params;
+    const profile = await prisma.profile.findFirst({
+      where: { id, userId: req.user!.userId },
+    });
+    if (!profile) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
+    const bazi = getBaziProfile(profile.birthDateTime, profile.gender, {
+      birthPlace: profile.birthLocation || undefined,
+    });
+    const stored = profile.baziPillar ? JSON.parse(profile.baziPillar) : null;
+    if (stored?.schemaVersion !== bazi.schemaVersion) {
+      await prisma.profile.update({
+        where: { id: profile.id },
+        data: { baziPillar: JSON.stringify(bazi) },
+      });
+    }
+
+    res.json({ ...profile, baziPillar: JSON.stringify(bazi), bazi });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) => {
   try {
     const parsed = createSchema.safeParse(req.body);
@@ -54,7 +82,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
     const { type, name, gender, year, month, day, hour, minute, birthLocation, isPrimary } =
       parsed.data;
     const birthDateTime = new Date(year, month - 1, day, hour, minute);
-    const bazi = getBaziProfile(birthDateTime, gender);
+    const bazi = getBaziProfile(birthDateTime, gender, { birthPlace: birthLocation });
 
     if (isPrimary) {
       await prisma.profile.updateMany({
@@ -109,7 +137,8 @@ router.patch("/:id", authMiddleware, async (req: AuthenticatedRequest, res, next
       parsed.data.day !== undefined ||
       parsed.data.hour !== undefined ||
       parsed.data.minute !== undefined ||
-      parsed.data.gender !== undefined
+      parsed.data.gender !== undefined ||
+      parsed.data.birthLocation !== undefined
     ) {
       const birth = existing.birthDateTime;
       const year = parsed.data.year ?? birth.getFullYear();
@@ -119,7 +148,9 @@ router.patch("/:id", authMiddleware, async (req: AuthenticatedRequest, res, next
       const minute = parsed.data.minute ?? birth.getMinutes();
       const gender = parsed.data.gender ?? existing.gender;
       data.birthDateTime = new Date(year, month - 1, day, hour, minute);
-      data.baziPillar = JSON.stringify(getBaziProfile(data.birthDateTime as Date, gender));
+      data.baziPillar = JSON.stringify(getBaziProfile(data.birthDateTime as Date, gender, {
+        birthPlace: (data.birthLocation as string | undefined) ?? existing.birthLocation ?? undefined,
+      }));
       if (parsed.data.gender) data.gender = gender;
     }
 

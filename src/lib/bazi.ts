@@ -1,7 +1,26 @@
-import { Solar, Lunar } from "lunar-javascript";
+import { Solar } from "lunar-javascript";
+import {
+  calculateBazi,
+  calculateBaziFiveElementsStats,
+  toBaziJson,
+  toBaziText,
+  type BaziInput,
+  type BaziOutput,
+} from "taibu-core/bazi";
+import {
+  calculateBaziDayun,
+  toBaziDayunJson,
+  toBaziDayunText,
+  type DayunOutput,
+} from "taibu-core/bazi-dayun";
 
-const GAN = ["", "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"];
-const ZHI = ["", "子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"];
+export const BAZI_ENGINE = {
+  name: "taibu-core",
+  version: "3.5.0",
+  schemaVersion: 2,
+  source: "https://github.com/hhszzzz/taibu",
+} as const;
+
 const WUXING_MAP: Record<string, string> = {
   甲: "木", 乙: "木", 丙: "火", 丁: "火", 戊: "土", 己: "土",
   庚: "金", 辛: "金", 壬: "水", 癸: "水",
@@ -9,7 +28,25 @@ const WUXING_MAP: Record<string, string> = {
   午: "火", 未: "土", 申: "金", 酉: "金", 戌: "土", 亥: "水",
 };
 
+const GENERATES: Record<string, string> = {
+  木: "火", 火: "土", 土: "金", 金: "水", 水: "木",
+};
+
+const OVERCOMES: Record<string, string> = {
+  木: "土", 土: "水", 水: "火", 火: "金", 金: "木",
+};
+
+export interface BaziCalculationOptions {
+  calendarType?: "solar" | "lunar";
+  isLeapMonth?: boolean;
+  birthPlace?: string;
+  longitude?: number;
+}
+
 export interface BaziPillar {
+  schemaVersion: 2;
+  engine: typeof BAZI_ENGINE;
+  input: BaziInput;
   year: string;
   month: string;
   day: string;
@@ -22,6 +59,13 @@ export interface BaziPillar {
   lunarDate: { year: string; month: string; day: string };
   bodyStrength: "强" | "弱" | "中和";
   xiYongShen: { xi: string[]; ji: string[] };
+  assessment: { kind: "heuristic"; warning: string };
+  chart: BaziOutput;
+  canonicalJson: ReturnType<typeof toBaziJson>;
+  canonicalText: string;
+  dayun: DayunOutput;
+  dayunJson: ReturnType<typeof toBaziDayunJson>;
+  dayunText: string;
 }
 
 export interface YearlyFlow {
@@ -32,215 +76,192 @@ export interface YearlyFlow {
   shiShen: string;
   naYin: string;
   wuXing: { gan: string; zhi: string };
+  age?: number;
+  diShi?: string;
+  shenSha?: string[];
+  taiSui?: string[];
+  branchRelations?: unknown[];
 }
 
-function countWuxing(pillar: BaziPillar): Record<string, number> {
-  const counts: Record<string, number> = { 金: 0, 木: 0, 水: 0, 火: 0, 土: 0 };
-  const all = [pillar.year, pillar.month, pillar.day, pillar.hour].join("");
-  for (const char of all) {
-    const wx = WUXING_MAP[char];
-    if (wx) counts[wx] = (counts[wx] || 0) + 1;
-  }
-  return counts;
+function toGender(gender: "male" | "female" | string): "male" | "female" {
+  return gender === "female" ? "female" : "male";
 }
 
-export function getBaziProfile(
+function buildInput(
   birthDateTime: Date,
-  gender: "male" | "female" | string
-): BaziPillar {
-  const solar = Solar.fromYmdHms(
+  gender: "male" | "female" | string,
+  options: BaziCalculationOptions,
+): BaziInput {
+  return {
+    gender: toGender(gender),
+    birthYear: birthDateTime.getFullYear(),
+    birthMonth: birthDateTime.getMonth() + 1,
+    birthDay: birthDateTime.getDate(),
+    birthHour: birthDateTime.getHours(),
+    birthMinute: birthDateTime.getMinutes(),
+    calendarType: options.calendarType ?? "solar",
+    isLeapMonth: options.isLeapMonth ?? false,
+    birthPlace: options.birthPlace,
+    longitude: options.longitude,
+  };
+}
+
+function isHelpful(dayElement: string, target: string): boolean {
+  return dayElement === target || GENERATES[target] === dayElement;
+}
+
+function isConsuming(dayElement: string, target: string): boolean {
+  return GENERATES[dayElement] === target || OVERCOMES[dayElement] === target;
+}
+
+/** 兼容旧 UI 的参考值，不作为确定性排盘事实提供给模型。 */
+function buildCompatibilityAssessment(
+  chart: BaziOutput,
+  stats: Record<string, number>,
+): Pick<BaziPillar, "bodyStrength" | "xiYongShen" | "assessment"> {
+  const dayElement = WUXING_MAP[chart.dayMaster] || "";
+  let helpful = 0;
+  let consuming = 0;
+  for (const [element, score] of Object.entries(stats)) {
+    if (isHelpful(dayElement, element)) helpful += score;
+    if (isConsuming(dayElement, element)) consuming += score;
+  }
+  const monthElement = WUXING_MAP[chart.fourPillars.month.branch] || "";
+  if (isHelpful(dayElement, monthElement)) helpful += 1.5;
+  if (isConsuming(dayElement, monthElement)) consuming += 1.5;
+
+  const bodyStrength: BaziPillar["bodyStrength"] =
+    helpful > consuming + 1.8 ? "强" : consuming > helpful + 1.8 ? "弱" : "中和";
+  const all = ["金", "木", "水", "火", "土"];
+  const xi = all.filter((element) =>
+    bodyStrength === "强" ? isConsuming(dayElement, element) : isHelpful(dayElement, element),
+  );
+  const ji = all.filter((element) =>
+    bodyStrength === "强" ? isHelpful(dayElement, element) : isConsuming(dayElement, element),
+  );
+  return {
+    bodyStrength,
+    xiYongShen: { xi, ji },
+    assessment: {
+      kind: "heuristic",
+      warning: "身强弱及喜忌为兼容界面的参考估计，不属于确定性排盘结果。",
+    },
+  };
+}
+
+function buildLunarDate(birthDateTime: Date) {
+  const lunar = Solar.fromYmdHms(
     birthDateTime.getFullYear(),
     birthDateTime.getMonth() + 1,
     birthDateTime.getDate(),
     birthDateTime.getHours(),
     birthDateTime.getMinutes(),
-    birthDateTime.getSeconds()
-  );
-  const lunar = solar.getLunar();
+    birthDateTime.getSeconds(),
+  ).getLunar() as ReturnType<ReturnType<typeof Solar.fromYmdHms>["getLunar"]> & {
+    getYearInChinese(): string;
+    getMonthInChinese(): string;
+    getDayInChinese(): string;
+  };
+  return {
+    year: lunar.getYearInChinese(),
+    month: lunar.getMonthInChinese(),
+    day: lunar.getDayInChinese(),
+  };
+}
 
-  const year = lunar.getYearInGanZhiExact();
-  const month = lunar.getMonthInGanZhiExact();
-  const day = lunar.getDayInGanZhiExact();
-  const hour = lunar.getTimeInGanZhi();
-
-  const dayGan = lunar.getDayGanExact();
-  const dayZhi = lunar.getDayZhiExact();
-
-  const genderLabel = gender === "male" ? "元男" : gender === "female" ? "元女" : "元身";
-
-  const pillar: BaziPillar = {
-    year,
-    month,
-    day,
-    hour,
+export function getBaziProfile(
+  birthDateTime: Date,
+  gender: "male" | "female" | string,
+  options: BaziCalculationOptions = {},
+): BaziPillar {
+  const input = buildInput(birthDateTime, gender, options);
+  const chart = calculateBazi(input);
+  const dayun = calculateBaziDayun(input);
+  const stats = calculateBaziFiveElementsStats(chart.fourPillars);
+  const statsRecord: Record<string, number> = { ...stats };
+  const pillars = chart.fourPillars;
+  return {
+    schemaVersion: 2,
+    engine: BAZI_ENGINE,
+    input,
+    year: `${pillars.year.stem}${pillars.year.branch}`,
+    month: `${pillars.month.stem}${pillars.month.branch}`,
+    day: `${pillars.day.stem}${pillars.day.branch}`,
+    hour: `${pillars.hour.stem}${pillars.hour.branch}`,
     dayMaster: {
-      gan: dayGan,
-      zhi: dayZhi,
-      wuxing: WUXING_MAP[dayGan] || "",
+      gan: pillars.day.stem,
+      zhi: pillars.day.branch,
+      wuxing: WUXING_MAP[pillars.day.stem] || "",
     },
-    genderLabel,
-    wuxing: {},
-    shishen: { gan: lunar.getBaZiShiShenGan(), zhi: lunar.getBaZiShiShenZhi() },
-    nayin: lunar.getBaZiNaYin(),
-    lunarDate: {
-      year: (lunar as any).getYearInChinese(),
-      month: (lunar as any).getMonthInChinese(),
-      day: (lunar as any).getDayInChinese(),
+    genderLabel: gender === "male" ? "元男" : gender === "female" ? "元女" : "元身",
+    wuxing: statsRecord,
+    shishen: {
+      gan: [pillars.year.tenGod || "", pillars.month.tenGod || "", "日主", pillars.hour.tenGod || ""],
+      zhi: [pillars.year, pillars.month, pillars.day, pillars.hour].map((pillar) =>
+        pillar.hiddenStems.map((hidden) => hidden.tenGod).join("、"),
+      ),
     },
-    bodyStrength: "中和",
-    xiYongShen: { xi: [], ji: [] },
+    nayin: [pillars.year.naYin || "", pillars.month.naYin || "", pillars.day.naYin || "", pillars.hour.naYin || ""],
+    lunarDate: buildLunarDate(birthDateTime),
+    ...buildCompatibilityAssessment(chart, statsRecord),
+    chart,
+    canonicalJson: toBaziJson(chart),
+    canonicalText: toBaziText(chart, { detailLevel: "full" }),
+    dayun,
+    dayunJson: toBaziDayunJson(dayun),
+    dayunText: toBaziDayunText(dayun, { detailLevel: "full" }),
   };
-
-  pillar.wuxing = countWuxing(pillar);
-  const analysis = analyzeBodyStrength(pillar);
-  pillar.bodyStrength = analysis.strength;
-  pillar.xiYongShen = analysis.xiYongShen;
-  return pillar;
 }
 
-const GENERATES: Record<string, string> = {
-  木: "火",
-  火: "土",
-  土: "金",
-  金: "水",
-  水: "木",
-};
-
-const OVERCOMES: Record<string, string> = {
-  木: "土",
-  土: "水",
-  水: "火",
-  火: "金",
-  金: "木",
-};
-
-function isHelpful(dayWx: string, targetWx: string) {
-  return dayWx === targetWx || GENERATES[targetWx] === dayWx;
-}
-
-function isConsuming(dayWx: string, targetWx: string) {
-  return GENERATES[dayWx] === targetWx || OVERCOMES[dayWx] === targetWx;
-}
-
-function analyzeBodyStrength(pillar: BaziPillar): {
-  strength: "强" | "弱" | "中和";
-  xiYongShen: { xi: string[]; ji: string[] };
-} {
-  const dayWx = pillar.dayMaster.wuxing;
-  const monthZhi = pillar.month.slice(1);
-  const monthWx = WUXING_MAP[monthZhi] || "";
-
-  let helpful = 0;
-  let consuming = 0;
-
-  const allChars = [pillar.year, pillar.month, pillar.day, pillar.hour].join("");
-  for (const char of allChars) {
-    const wx = WUXING_MAP[char];
-    if (!wx) continue;
-    if (isHelpful(dayWx, wx)) helpful++;
-    if (isConsuming(dayWx, wx)) consuming++;
-  }
-
-  // 月令加权
-  if (isHelpful(dayWx, monthWx)) helpful += 1.5;
-  if (isConsuming(dayWx, monthWx)) consuming += 1.5;
-
-  const strength: "强" | "弱" | "中和" =
-    helpful > consuming + 2 ? "强" : consuming > helpful + 2 ? "弱" : "中和";
-
-  const allWuxing = ["金", "木", "水", "火", "土"];
-  const xi = allWuxing.filter((wx) =>
-    strength === "强" ? isConsuming(dayWx, wx) : isHelpful(dayWx, wx)
-  );
-  const ji = allWuxing.filter((wx) =>
-    strength === "强" ? isHelpful(dayWx, wx) : isConsuming(dayWx, wx)
-  );
-
-  return { strength, xiYongShen: { xi, ji } };
-}
-
-function getShiShenFor(dayMasterGan: string, targetGan: string): string {
-  // Simplified lookup based on standard BaZi ten-gods for same-sex reference.
-  // This is a heuristic used for yearly stem; full ten-god logic is handled by lunar-javascript for pillars.
-  const dayIdx = GAN.indexOf(dayMasterGan);
-  const targetIdx = GAN.indexOf(targetGan);
-  if (dayIdx <= 0 || targetIdx <= 0) return "未知";
-
-  const samePolarity = dayIdx % 2 === targetIdx % 2;
-  const dayWx = WUXING_MAP[dayMasterGan];
-  const targetWx = WUXING_MAP[targetGan];
-
+function getLegacyTenGod(dayMasterGan: string, targetGan: string): string {
+  const dayElement = WUXING_MAP[dayMasterGan];
+  const targetElement = WUXING_MAP[targetGan];
+  const stems = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"];
+  const samePolarity = stems.indexOf(dayMasterGan) % 2 === stems.indexOf(targetGan) % 2;
   if (dayMasterGan === targetGan) return "比肩";
-
-  const generates: Record<string, string> = {
-    木: "火", 火: "土", 土: "金", 金: "水", 水: "木",
-  };
-  const overcomes: Record<string, string> = {
-    木: "土", 土: "水", 水: "火", 火: "金", 金: "木",
-  };
-
-  if (generates[dayWx] === targetWx) {
-    return samePolarity ? "食神" : "伤官";
-  }
-  if (generates[targetWx] === dayWx) {
-    return samePolarity ? "偏印" : "正印";
-  }
-  if (overcomes[dayWx] === targetWx) {
-    return samePolarity ? "偏财" : "正财";
-  }
-  if (overcomes[targetWx] === dayWx) {
-    return samePolarity ? "七杀" : "正官";
-  }
+  if (dayElement === targetElement) return "劫财";
+  if (GENERATES[dayElement] === targetElement) return samePolarity ? "食神" : "伤官";
+  if (GENERATES[targetElement] === dayElement) return samePolarity ? "偏印" : "正印";
+  if (OVERCOMES[dayElement] === targetElement) return samePolarity ? "偏财" : "正财";
+  if (OVERCOMES[targetElement] === dayElement) return samePolarity ? "七杀" : "正官";
   return "未知";
 }
 
 export function getYearlyFlow(profile: BaziPillar, year: number): YearlyFlow {
-  // Build a solar date for Li Chun (start of BaZi year) approximated as Feb 4 of the Gregorian year.
-  // For more accurate Li Chun the library offers getJieQi, but this is sufficient for MVP yearly flow.
-  const solar = Solar.fromYmd(year, 2, 4);
-  const lunar = solar.getLunar();
+  const precise = profile.dayun?.list
+    ?.flatMap((item) => item.liunianList || [])
+    .find((item) => item.year === year);
+  if (precise) {
+    return {
+      year,
+      ganZhi: precise.ganZhi,
+      gan: precise.gan,
+      zhi: precise.zhi,
+      shiShen: precise.tenGod,
+      naYin: precise.nayin,
+      wuXing: { gan: WUXING_MAP[precise.gan] || "", zhi: WUXING_MAP[precise.zhi] || "" },
+      age: precise.age,
+      diShi: precise.diShi,
+      shenSha: precise.shenSha,
+      taiSui: precise.taiSui,
+      branchRelations: precise.branchRelations,
+    };
+  }
+
+  // 历史档案没有 dayun 时的兼容回退。
+  const lunar = Solar.fromYmd(year, 7, 1).getLunar();
   const ganZhi = lunar.getYearInGanZhiByLiChun();
   const gan = lunar.getYearGanByLiChun();
   const zhi = lunar.getYearZhiByLiChun();
-
-  const shiShen = getShiShenFor(profile.dayMaster.gan, gan);
-  const naYin = getNaYin(ganZhi);
-
   return {
     year,
     ganZhi,
     gan,
     zhi,
-    shiShen,
-    naYin,
-    wuXing: {
-      gan: WUXING_MAP[gan] || "",
-      zhi: WUXING_MAP[zhi] || "",
-    },
+    shiShen: getLegacyTenGod(profile.dayMaster.gan, gan),
+    naYin: "",
+    wuXing: { gan: WUXING_MAP[gan] || "", zhi: WUXING_MAP[zhi] || "" },
   };
-}
-
-// 六十甲子纳音表（完整）
-const NA_YIN_MAP: Record<string, string> = {
-  甲子: "海中金", 乙丑: "海中金", 丙寅: "炉中火", 丁卯: "炉中火",
-  戊辰: "大林木", 己巳: "大林木", 庚午: "路旁土", 辛未: "路旁土",
-  壬申: "剑锋金", 癸酉: "剑锋金", 甲戌: "山头火", 乙亥: "山头火",
-  丙子: "涧下水", 丁丑: "涧下水", 戊寅: "城头土", 己卯: "城头土",
-  庚辰: "白蜡金", 辛巳: "白蜡金", 壬午: "杨柳木", 癸未: "杨柳木",
-  甲申: "泉中水", 乙酉: "泉中水", 丙戌: "屋上土", 丁亥: "屋上土",
-  戊子: "霹雳火", 己丑: "霹雳火", 庚寅: "松柏木", 辛卯: "松柏木",
-  壬辰: "长流水", 癸巳: "长流水", 甲午: "砂中金", 乙未: "砂中金",
-  丙申: "山下火", 丁酉: "山下火", 戊戌: "平地木", 己亥: "平地木",
-  庚子: "壁上土", 辛丑: "壁上土", 壬寅: "金箔金", 癸卯: "金箔金",
-  甲辰: "覆灯火", 乙巳: "覆灯火", 丙午: "天河水", 丁未: "天河水",
-  戊申: "大驿土", 己酉: "大驿土", 庚戌: "钗钏金", 辛亥: "钗钏金",
-  壬子: "桑柘木", 癸丑: "桑柘木", 甲寅: "大溪水", 乙卯: "大溪水",
-  丙辰: "沙中土", 丁巳: "沙中土", 戊午: "天上火", 己未: "天上火",
-  庚申: "石榴木", 辛酉: "石榴木", 壬戌: "大海水", 癸亥: "大海水",
-};
-
-function getNaYin(ganZhi: string): string {
-  return NA_YIN_MAP[ganZhi] || "";
 }
 
 export interface DailyFlow {
@@ -254,28 +275,30 @@ export interface DailyFlow {
 }
 
 export function getDailyFlow(profile: BaziPillar, date: Date): DailyFlow {
-  const solar = Solar.fromYmd(
-    date.getFullYear(),
-    date.getMonth() + 1,
-    date.getDate()
-  );
-  const lunar = solar.getLunar();
-
-  const yearGanZhi = lunar.getYearInGanZhiByLiChun();
-  const monthGanZhi = lunar.getMonthInGanZhi();
+  const lunar = Solar.fromYmd(date.getFullYear(), date.getMonth() + 1, date.getDate()).getLunar();
   const dayGanZhi = lunar.getDayInGanZhi();
-
   const dayGan = lunar.getDayGan();
-  const dayShiShen = getShiShenFor(profile.dayMaster.gan, dayGan);
-
-  const pad = (n: number) => String(n).padStart(2, "0");
+  const pad = (value: number) => String(value).padStart(2, "0");
   return {
     date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-    yearGanZhi,
-    monthGanZhi,
+    yearGanZhi: lunar.getYearInGanZhiByLiChun(),
+    monthGanZhi: lunar.getMonthInGanZhi(),
     dayGanZhi,
-    dayShiShen,
-    dayNaYin: getNaYin(dayGanZhi),
+    dayShiShen: getLegacyTenGod(profile.dayMaster.gan, dayGan),
+    dayNaYin: "",
     dayWuXing: WUXING_MAP[dayGan] || "",
   };
+}
+
+export function formatBaziForAI(profile: BaziPillar, targetYear?: number): string {
+  const sections = [
+    `【排盘引擎】${profile.engine.name} ${profile.engine.version}（结构版本 ${profile.schemaVersion}）`,
+    profile.canonicalText,
+    toBaziDayunText(profile.dayun, { detailLevel: "default" }),
+  ];
+  if (targetYear) {
+    sections.push(`## 用户关注流年\n${JSON.stringify(getYearlyFlow(profile, targetYear), null, 2)}`);
+  }
+  sections.push("【事实边界】以上排盘文本是计算结果；身强弱、格局、喜用神和事件判断必须结合全盘论证，不得直接采用兼容字段中的启发式结论。");
+  return sections.join("\n\n");
 }

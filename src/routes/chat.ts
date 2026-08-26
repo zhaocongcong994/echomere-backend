@@ -1,11 +1,10 @@
 import { Router } from "express";
-import fs from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { getBaziProfile, getYearlyFlow } from "../lib/bazi.js";
-import { castHexagram } from "../lib/liuyao.js";
+import { formatBaziForAI, getBaziProfile, getYearlyFlow, type BaziPillar } from "../lib/bazi.js";
+import { castHexagram, formatLiuyaoForAI, type HexagramResult } from "../lib/liuyao.js";
 import { streamChat } from "../lib/llm.js";
+import { buildSystemPrompt, sanitizeUserQuestion } from "../lib/prompt-builder.js";
 import { authMiddleware, type AuthenticatedRequest } from "../middleware.js";
 
 const router = Router();
@@ -18,58 +17,19 @@ const schema = z.object({
 
 const currentYear = new Date().getFullYear();
 
-function loadPrompt(name: string): string {
-  return fs.readFileSync(
-    path.join(process.cwd(), "src/lib/prompts", `${name}.md`),
-    "utf-8"
-  );
-}
-
 function extractYear(question: string): number {
   const q = question.replace(/今年/, String(currentYear)).replace(/明年/, String(currentYear + 1));
   const match = q.match(/(20\d{2})/);
   return match ? Number(match[1]) : currentYear;
 }
 
-function buildKanYunContext(profile: ReturnType<typeof getBaziProfile>, year: number) {
+function buildKanYunContext(profile: BaziPillar, year: number) {
   const flow = getYearlyFlow(profile, year);
-  return `
-用户主命盘：
-- 四柱：${profile.year} / ${profile.month} / ${profile.day} / ${profile.hour}
-- 日主：${profile.dayMaster.gan}${profile.dayMaster.zhi}（${profile.dayMaster.wuxing}）
-- 性别：${profile.genderLabel}
-
-${year} 年流年数据：
-- 干支：${flow.ganZhi}
-- 十神：${flow.shiShen}
-- 纳音：${flow.naYin}
-
-工具调用结果：
-- 查询命盘：主命盘
-- 查询时间流：${year}年流年${flow.ganZhi}${flow.shiShen}${flow.naYin}
-`;
+  return `${formatBaziForAI(profile, year)}\n\n【工具调用摘要】\n- 查询命盘：主命盘\n- 查询时间流：${year}年流年${flow.ganZhi}·${flow.shiShen}·${flow.naYin}`;
 }
 
-function buildWenShiContext(hexagram: ReturnType<typeof castHexagram>) {
-  const yaoLines = hexagram.yaos
-    .map(
-      (y) =>
-        `${y.index}爻：${y.type}（${y.yin ? "阴" : "阳"}${y.changing ? "·动" : ""}）`
-    )
-    .join("\n");
-
-  return `
-起卦结果：
-- 本卦：${hexagram.originalName}（第 ${hexagram.originalNumber} 卦）
-- 变卦：${hexagram.changedName}（第 ${hexagram.changedNumber} 卦）
-- 变爻：${hexagram.changingYaos.length > 0 ? hexagram.changingYaos.join(", ") : "无"}
-
-六爻详情（从初爻到上爻）：
-${yaoLines}
-
-工具调用结果：
-- 起卦服务：已为本问题生成六爻卦象
-`;
+function buildWenShiContext(hexagram: HexagramResult) {
+  return `${formatLiuyaoForAI(hexagram)}\n\n【工具调用摘要】\n- 起卦服务：已为本问题生成并校验完整六爻盘`;
 }
 
 function routeSuiYuan(
@@ -95,7 +55,8 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
       return;
     }
 
-    let { mode, message, conversationId } = parsed.data;
+    let { mode, conversationId } = parsed.data;
+    const message = sanitizeUserQuestion(parsed.data.message);
 
     let profile: ReturnType<typeof getBaziProfile> | null = null;
     let profileRecord = null;
@@ -103,8 +64,17 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
       profileRecord = await prisma.profile.findFirst({
         where: { userId, isPrimary: true },
       });
-      if (profileRecord?.baziPillar) {
-        profile = JSON.parse(profileRecord.baziPillar);
+      if (profileRecord) {
+        profile = getBaziProfile(profileRecord.birthDateTime, profileRecord.gender, {
+          birthPlace: profileRecord.birthLocation || undefined,
+        });
+        const stored = profileRecord.baziPillar ? JSON.parse(profileRecord.baziPillar) : null;
+        if (stored?.schemaVersion !== profile.schemaVersion) {
+          await prisma.profile.update({
+            where: { id: profileRecord.id },
+            data: { baziPillar: JSON.stringify(profile) },
+          });
+        }
       }
     }
 
@@ -115,6 +85,11 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
       routeReason = `根据问题语义，已为你匹配「${
         actualMode === "kanyun" ? "看运" : actualMode === "wenshi" ? "问事" : "倾听"
       }」模式`;
+    }
+
+    if (actualMode === "kanyun" && !profile) {
+      res.status(400).json({ error: "NO_PROFILE", message: "看运需要先建立命盘档案" });
+      return;
     }
 
     let conversation = conversationId
@@ -138,6 +113,12 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
       }」模式`;
     }
 
+    const previousMessages = await prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    });
+
     await prisma.message.create({
       data: {
         conversationId: conversation.id,
@@ -157,50 +138,53 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
     let toolCalls: Array<{ name: string; parameters?: unknown; result?: unknown }> = [];
 
     if (actualMode === "kanyun") {
-      systemPrompt = loadPrompt("kanYun");
-      if (!profile) {
-        res.status(400).json({ error: "NO_PROFILE", message: "看运需要先建立命盘档案" });
-        return;
-      }
+      systemPrompt = buildSystemPrompt("kanyun");
       const targetYear = extractYear(message);
-      userContent = buildKanYunContext(profile, targetYear) + "\n\n用户问题：" + message;
+      userContent = buildKanYunContext(profile!, targetYear) + "\n\n【用户当前问题】\n" + message;
       toolCalls = [
-        { name: "查询命盘", parameters: { profileId: profileRecord?.id }, result: { profile } },
+        {
+          name: "查询命盘",
+          parameters: { profileId: profileRecord?.id, engine: profile!.engine },
+          result: { profile: profile!.canonicalJson, schemaVersion: profile!.schemaVersion },
+        },
         {
           name: "查询时间流",
           parameters: { year: targetYear },
-          result: getYearlyFlow(profile, targetYear),
+          result: getYearlyFlow(profile!, targetYear),
         },
       ];
     } else if (actualMode === "qingting") {
-      systemPrompt = loadPrompt("qingTing");
+      systemPrompt = buildSystemPrompt("qingting");
       userContent = `[当前模式=倾听，locale=zh，首轮对话]\n\n用户倾诉：${message}`;
     } else if (actualMode === "wenshi") {
-      systemPrompt = loadPrompt("wenShi");
+      systemPrompt = buildSystemPrompt("wenshi");
 
       const previousAssistant = await prisma.message.findFirst({
         where: { conversationId: conversation.id, role: "assistant" },
         orderBy: { createdAt: "desc" },
       });
 
-      let hexagram: ReturnType<typeof castHexagram> | null = null;
+      let hexagram: HexagramResult | null = null;
       if (previousAssistant?.toolCalls) {
         try {
           const calls = JSON.parse(previousAssistant.toolCalls);
           const existing = calls.find(
             (c: { name: string; result?: unknown }) => c.name === "起卦服务"
           );
-          if (existing?.result) hexagram = existing.result as ReturnType<typeof castHexagram>;
+          if (existing?.result?.schemaVersion === 2) hexagram = existing.result as HexagramResult;
         } catch {
           hexagram = null;
         }
       }
 
       if (!hexagram) {
-        hexagram = castHexagram(message, conversation.createdAt.getTime());
+        hexagram = await castHexagram(
+          previousAssistant ? conversation.title || message : message,
+          conversation.createdAt.getTime(),
+        );
       }
 
-      userContent = buildWenShiContext(hexagram) + "\n\n用户问题：" + message;
+      userContent = buildWenShiContext(hexagram) + "\n\n【用户当前问题】\n" + message;
       toolCalls = [
         {
           name: "起卦服务",
@@ -213,8 +197,13 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
       return;
     }
 
+    const history = previousMessages
+      .reverse()
+      .filter((item) => item.role === "user" || item.role === "assistant")
+      .map((item) => ({ role: item.role as "user" | "assistant", content: item.content }));
     const messages = [
       { role: "system" as const, content: systemPrompt },
+      ...history,
       { role: "user" as const, content: userContent },
     ];
 

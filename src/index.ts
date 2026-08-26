@@ -14,28 +14,32 @@ import { errorHandler } from "./middleware.js";
 
 const app = express();
 
+const allowedOrigins = (
+  process.env.CORS_ORIGINS || "http://localhost:3000"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "http://81.70.23.109:8080",
-    ],
+    origin: allowedOrigins,
     credentials: true,
   })
 );
 app.use(express.json());
 
-app.use("/auth", authRoutes);
-app.use("/profile", profileRoutes);
-app.use("/profiles", profilesRoutes);
-app.use("/onboarding", onboardingRoutes);
-app.use("/bazi", baziRoutes);
-app.use("/conversations", conversationsRoutes);
-app.use("/chat", chatRoutes);
-app.use("/daily-fortune", dailyFortuneRoutes);
-app.use("/subscription", subscriptionRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/profile", profileRoutes);
+app.use("/api/profiles", profilesRoutes);
+app.use("/api/onboarding", onboardingRoutes);
+app.use("/api/bazi", baziRoutes);
+app.use("/api/conversations", conversationsRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/daily-fortune", dailyFortuneRoutes);
+app.use("/api/subscription", subscriptionRoutes);
 
-app.get("/health", (_req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 

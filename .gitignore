@@ -9,11 +9,15 @@ dist/
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # database
 *.db
 *.sqlite
 *.sqlite3
+
+# generated Prisma client
+src/generated/
 
 # misc
 .DS_Store
