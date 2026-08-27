@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { getBaziProfile } from "../lib/bazi.js";
+import { ensureProfileName } from "../lib/profile-name.js";
 import { authMiddleware, type AuthenticatedRequest } from "../middleware.js";
 
 const router = Router();
@@ -31,7 +32,7 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res, next) => 
 
     res.json({
       user,
-      primaryProfile,
+      primaryProfile: primaryProfile ? ensureProfileName(primaryProfile) : null,
       bazi,
     });
   } catch (err) {

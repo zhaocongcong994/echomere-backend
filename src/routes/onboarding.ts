@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getBaziProfile } from "../lib/bazi.js";
+import { ensureProfileName } from "../lib/profile-name.js";
 import { authMiddleware, type AuthenticatedRequest } from "../middleware.js";
 
 const router = Router();
@@ -38,7 +39,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
       data: {
         userId: req.user!.userId,
         type: "self",
-        name: name || undefined,
+        name: name?.trim() || "自己",
         gender,
         birthDateTime,
         birthLocation,
@@ -47,7 +48,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
       },
     });
 
-    res.json({ profile: created, bazi: profile });
+    res.json({ profile: ensureProfileName(created), bazi: profile });
   } catch (err) {
     next(err);
   }

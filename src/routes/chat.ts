@@ -103,6 +103,7 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
         data: {
           userId,
           mode: actualMode,
+          originalMode: mode === "suiyuan" ? mode : null,
           title: message.slice(0, 30),
         },
       });
@@ -131,6 +132,21 @@ router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, ne
     await prisma.conversation.update({
       where: { id: conversation.id },
       data: { messageCount: { increment: 1 }, updatedAt: new Date() },
+    });
+
+    // 只保留最近创建的 20 条 active 对话，超出部分删除
+    const conversationsToKeep = await prisma.conversation.findMany({
+      where: { userId, status: "active" },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: { id: true },
+    });
+    const keepIds = new Set(conversationsToKeep.map((c) => c.id));
+    if (!keepIds.has(conversation.id)) {
+      keepIds.add(conversation.id);
+    }
+    await prisma.conversation.deleteMany({
+      where: { userId, status: "active", id: { notIn: Array.from(keepIds) } },
     });
 
     let systemPrompt = "";

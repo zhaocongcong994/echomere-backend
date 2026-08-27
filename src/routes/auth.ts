@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { signToken } from "../lib/auth.js";
+import { signToken, blacklistToken } from "../lib/auth.js";
 import { authMiddleware, type AuthenticatedRequest } from "../middleware.js";
 
 const router = Router();
@@ -68,6 +68,19 @@ router.post("/login", async (req, res, next) => {
         defaultDestinySystem: user.defaultDestinySystem,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/logout", authMiddleware, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    if (token) {
+      await blacklistToken(token);
+    }
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }

@@ -1,15 +1,15 @@
 import type { Request, Response, NextFunction } from "express";
-import { verifyToken, type JwtPayload } from "./lib/auth.js";
+import { verifyToken, isTokenBlacklisted, type JwtPayload } from "./lib/auth.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: JwtPayload;
 }
 
-export function authMiddleware(
+export async function authMiddleware(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     res.status(401).json({ error: "Unauthorized" });
@@ -19,6 +19,10 @@ export function authMiddleware(
   const token = authHeader.slice(7);
   try {
     req.user = verifyToken(token);
+    if (await isTokenBlacklisted(token)) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
     next();
   } catch {
     res.status(401).json({ error: "Unauthorized" });

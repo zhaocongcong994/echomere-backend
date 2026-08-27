@@ -41,16 +41,17 @@ model Profile {
 }
 
 model Conversation {
-  id           String    @id @default(cuid())
-  userId       String
-  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  mode         String
-  title        String?
-  status       String    @default("active")
-  messageCount Int       @default(0)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  messages     Message[]
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mode          String
+  originalMode  String?
+  title         String?
+  status        String    @default("active")
+  messageCount  Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  messages      Message[]
 
   @@index([userId, updatedAt])
 }
@@ -95,4 +96,14 @@ model BillingRecord {
   createdAt      DateTime @default(now())
 
   @@index([userId, createdAt])
+}
+
+model TokenBlacklist {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([tokenHash])
+  @@index([expiresAt])
 }
