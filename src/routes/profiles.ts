@@ -29,6 +29,7 @@ const updateSchema = z.object({
   hour: z.number().int().min(0).max(23).optional(),
   minute: z.number().int().min(0).max(59).optional(),
   birthLocation: z.string().optional(),
+  timezone: z.string().optional(),
   isPrimary: z.boolean().optional(),
 });
 
@@ -147,6 +148,7 @@ router.patch("/:id", authMiddleware, async (req: AuthenticatedRequest, res, next
     if (parsed.data.name !== undefined) data.name = parsed.data.name;
     if (parsed.data.birthLocation !== undefined)
       data.birthLocation = parsed.data.birthLocation;
+    if (parsed.data.timezone !== undefined) data.timezone = parsed.data.timezone;
 
     if (parsed.data.type === "self") {
       const existingSelf = await prisma.profile.findFirst({

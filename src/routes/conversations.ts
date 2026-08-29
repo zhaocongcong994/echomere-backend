@@ -14,7 +14,14 @@ router.get("/", authMiddleware, async (req: AuthenticatedRequest, res, next) => 
         _count: { select: { messages: true } },
       },
     });
-    res.json(conversations);
+    res.json(
+      conversations.map((c) => ({
+        id: c.id,
+        title: c.title,
+        updatedAt: c.updatedAt,
+        messageCount: c._count.messages,
+      }))
+    );
   } catch (err) {
     next(err);
   }
@@ -36,6 +43,25 @@ router.get("/:id", authMiddleware, async (req: AuthenticatedRequest, res, next) 
     }
 
     res.json(conversation);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/:id", authMiddleware, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user!.userId;
+    const existing = await prisma.conversation.findFirst({
+      where: { id, userId },
+    });
+    if (!existing) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
+    await prisma.conversation.delete({ where: { id } });
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }

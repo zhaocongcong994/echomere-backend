@@ -9,6 +9,7 @@ import baziRoutes from "./routes/bazi.js";
 import conversationsRoutes from "./routes/conversations.js";
 import chatRoutes from "./routes/chat.js";
 import dailyFortuneRoutes from "./routes/dailyFortune.js";
+import reportsRoutes from "./routes/reports.js";
 import subscriptionRoutes from "./routes/subscription.js";
 import { errorHandler } from "./middleware.js";
 
@@ -37,6 +38,7 @@ app.use("/api/bazi", baziRoutes);
 app.use("/api/conversations", conversationsRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/daily-fortune", dailyFortuneRoutes);
+app.use("/api/reports", reportsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 
 app.get("/api/health", (_req, res) => {

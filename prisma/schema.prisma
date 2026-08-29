@@ -21,6 +21,7 @@ model User {
   messages             Message[]
   feedbacks            Feedback[]
   billingRecords       BillingRecord[]
+  reports              Report[]
 }
 
 model Profile {
@@ -32,10 +33,12 @@ model Profile {
   gender        String
   birthDateTime DateTime
   birthLocation String?
+  timezone      String?
   isPrimary     Boolean  @default(false)
   baziPillar    String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  report        Report?
 
   @@index([userId])
 }
@@ -54,6 +57,24 @@ model Conversation {
   messages      Message[]
 
   @@index([userId, updatedAt])
+}
+
+model Report {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId   String   @unique
+  profile     Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  title       String?
+  summary     String?
+  content     String?
+  status      String   @default("pending")
+  errorMsg    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([profileId])
 }
 
 model Message {
