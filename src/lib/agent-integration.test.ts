@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -482,17 +482,17 @@ test("Backend proxies Agent SSE idempotently and persists one hexagram per conve
 
 async function applyMigrations(databasePath: string): Promise<void> {
   const database = createClient({ url: `file:${databasePath}` });
-  const migrations = [
-    "20260822175620_init",
-    "20260823033509_billing",
-    "20260823042656_make_email_phone_optional",
-    "20260827090000_agent_integration",
-    "20260827120000_billing_agent_run_id",
-  ];
+  const migrationsDirectory = join(process.cwd(), "prisma", "migrations");
+  const migrations = readdirSync(migrationsDirectory, {
+    withFileTypes: true,
+  })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
   for (const migration of migrations) {
     await database.executeMultiple(
       readFileSync(
-        join(process.cwd(), "prisma", "migrations", migration, "migration.sql"),
+        join(migrationsDirectory, migration, "migration.sql"),
         "utf8",
       ),
     );
