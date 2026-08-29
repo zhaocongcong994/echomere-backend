@@ -1,0 +1,134 @@
+name: echomere-production
+
+services:
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes:
+      - echomere-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - echomere-private
+
+  agent:
+    build:
+      context: ./services/agent
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NODE_ENV: production
+      AGENT_HOST: 0.0.0.0
+      AGENT_PORT: 4310
+      AGENT_DB_PATH: /data/agent.db
+      AGENT_SHARED_SECRET: ${AGENT_SHARED_SECRET:?set AGENT_SHARED_SECRET}
+      AGENT_METRICS_TOKEN: ${AGENT_METRICS_TOKEN:?set AGENT_METRICS_TOKEN}
+      AGENT_CONCURRENCY_STORE: redis
+      REDIS_URL: redis://redis:6379
+      AGENT_TOOLS_PROVIDER: echomere-backend
+      ECHOMERE_BACKEND_URL: http://backend:3001
+      LLM_PROVIDER: deepseek
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_API_KEY: ${LLM_API_KEY:?set a rotated LLM_API_KEY}
+      LLM_PROFILES_FILE: /run/echomere/model-profiles.json
+      LLM_ACTIVE_PROFILE: ${LLM_ACTIVE_PROFILE:-deepseek-flash}
+      AGENT_RUNTIME_MODEL_SWITCH_ENABLED: ${AGENT_RUNTIME_MODEL_SWITCH_ENABLED:-true}
+      AGENT_RUNTIME_MODEL_SWITCH_MODE: service
+      AGENT_RUNTIME_MODEL_SWITCH_SERVICE_CONFIRM: private-network
+      AGENT_RUNTIME_MODEL_SELECTION_PATH: /data/runtime-model-profile.json
+      AGENT_MAX_CONCURRENT_RUNS: ${AGENT_MAX_CONCURRENT_RUNS:-8}
+      AGENT_MAX_CONCURRENT_RUNS_PER_USER: ${AGENT_MAX_CONCURRENT_RUNS_PER_USER:-2}
+      AGENT_MAX_QUALITY_REWRITES: ${AGENT_MAX_QUALITY_REWRITES:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - echomere-agent-data:/data
+      - ./deploy/production/model-profiles.json:/run/echomere/model-profiles.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "4310"
+    networks:
+      - echomere-private
+
+  backend:
+    build:
+      context: ./apps/backend
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: file:/data/backend.db
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      METRICS_TOKEN: ${BACKEND_METRICS_TOKEN:?set BACKEND_METRICS_TOKEN}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
+      AGENT_SERVICE_URL: http://agent:4310
+      AGENT_SHARED_SECRET: ${AGENT_SHARED_SECRET:?set AGENT_SHARED_SECRET}
+      AGENT_RUNTIME_MODEL_CONTROL_ENABLED: ${AGENT_RUNTIME_MODEL_CONTROL_ENABLED:-true}
+      AGENT_RUNTIME_MODEL_ADMIN_EMAILS: ${AGENT_RUNTIME_MODEL_ADMIN_EMAILS:?set administrator emails}
+      CHAT_RATE_LIMIT_STORE: redis
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - echomere-backend-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PUBLIC_PORT:-3001}:3001"
+    networks:
+      - echomere-private
+
+  front:
+    build:
+      context: ./apps/front
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      ECHOMERE_BACKEND_ORIGIN: http://backend:3001
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONT_BIND_ADDRESS:-127.0.0.1}:${FRONT_PUBLIC_PORT:-3101}:3000"
+    networks:
+      - echomere-private
+
+networks:
+  echomere-private:
+    driver: bridge
+
+volumes:
+  echomere-agent-data:
+  echomere-backend-data:
+  echomere-redis-data:

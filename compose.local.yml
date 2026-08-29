@@ -1,0 +1,74 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - echomere-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agent:
+    build:
+      context: ./services/agent
+    environment:
+      NODE_ENV: development
+      AGENT_HOST: 0.0.0.0
+      AGENT_PORT: 4310
+      AGENT_DB_PATH: /data/agent.db
+      AGENT_SHARED_SECRET: local-agent-secret-change-before-prod
+      AGENT_METRICS_TOKEN: local-agent-metrics-change-before-prod
+      AGENT_CONCURRENCY_STORE: redis
+      REDIS_URL: redis://redis:6379
+      LLM_PROVIDER: mock
+      AGENT_TOOLS_PROVIDER: echomere-backend
+      ECHOMERE_BACKEND_URL: http://backend:3001
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - echomere-agent-data:/data
+    ports:
+      - "4310:4310"
+
+  backend:
+    build:
+      context: ./apps/backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: file:/data/backend.db
+      JWT_SECRET: local-jwt-secret-change-before-production
+      CORS_ORIGINS: http://localhost:3101
+      AGENT_SERVICE_URL: http://agent:4310
+      AGENT_SHARED_SECRET: local-agent-secret-change-before-prod
+      METRICS_TOKEN: local-backend-metrics-change-before-prod
+      CHAT_RATE_LIMIT_STORE: redis
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - echomere-backend-data:/data
+    ports:
+      - "3001:3001"
+
+  front:
+    build:
+      context: ./apps/front
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      ECHOMERE_BACKEND_ORIGIN: http://backend:3001
+    ports:
+      - "3101:3000"
+
+volumes:
+  echomere-agent-data:
+  echomere-backend-data:
+  echomere-redis-data:

@@ -1,0 +1,27 @@
+{
+  "defaultProfile": "deepseek-flash",
+  "profiles": [
+    {
+      "id": "deepseek-flash",
+      "label": "DeepSeek V4 Flash",
+      "provider": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash",
+      "apiKeyEnv": "LLM_API_KEY",
+      "timeoutMs": 60000,
+      "maxTokens": 2048,
+      "thinking": "disabled"
+    },
+    {
+      "id": "deepseek-pro",
+      "label": "DeepSeek V4 Pro",
+      "provider": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "model": "deepseek-v4-pro",
+      "apiKeyEnv": "LLM_API_KEY",
+      "timeoutMs": 60000,
+      "maxTokens": 2048,
+      "thinking": "disabled"
+    }
+  ]
+}

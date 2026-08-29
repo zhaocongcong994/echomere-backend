@@ -26,3 +26,30 @@
 - 上游更新通过 `git subtree pull --squash` 同步到对应目录，再经过本分支的三端回归。
 - `.env`、模型 Key、数据库和运行数据不得提交。
 
+## 同步前端或后端更新
+
+上游仓库的代码不会被本分支反向修改。在工作区干净时执行：
+
+```bash
+git fetch front main
+git subtree pull --prefix=apps/front front main --squash
+
+git fetch origin main
+git subtree pull --prefix=apps/backend origin main --squash
+```
+
+每次同步后必须重新运行三端检查，通过后才能推送 `integration/full-platform`。
+
+## 本地启动
+
+```bash
+docker compose -f compose.local.yml up --build
+```
+
+启动后默认地址：
+
+- Front：`http://localhost:3101`
+- Backend：`http://localhost:3001`
+- Agent：`http://localhost:4310`
+
+生产模板见 [deploy/production/README.md](./deploy/production/README.md)。

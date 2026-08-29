@@ -1,0 +1,66 @@
+groups:
+  - name: echomere-services
+    rules:
+      - alert: EchomereBackendDown
+        expr: up{job="echomere-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Echomere Backend 无法抓取
+
+      - alert: EchomereAgentDown
+        expr: up{job="echomere-agent"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Echomere Agent 无法抓取
+
+      - alert: EchomereBackendHighErrorRate
+        expr: |
+          sum(rate(echomere_backend_http_requests_total{status_class="5xx"}[5m]))
+          /
+          clamp_min(sum(rate(echomere_backend_http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backend 5xx 比例持续超过 5%
+
+      - alert: EchomereAgentHighFailureRate
+        expr: |
+          sum(rate(echomere_agent_runs_total{outcome=~"failed|interrupted"}[10m]))
+          /
+          clamp_min(sum(rate(echomere_agent_runs_total{outcome=~"completed|failed|interrupted|waiting_input"}[10m])), 0.001)
+          > 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Agent 失败或中断比例持续超过 10%
+
+      - alert: EchomereAgentConcurrencyStoreUnavailable
+        expr: increase(echomere_agent_runs_total{outcome="concurrency_unavailable"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Agent Redis 并发存储不可用
+
+      - alert: EchomereChatRateLimitSpike
+        expr: increase(echomere_backend_chat_rate_limited_total[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backend 聊天限流异常增长
+
+      - alert: EchomereAgentConcurrencyRejectionSpike
+        expr: increase(echomere_agent_runs_total{outcome="rate_limited"}[5m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Agent 并发拒绝异常增长
