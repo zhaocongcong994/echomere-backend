@@ -28,7 +28,17 @@
 
 ## 同步前端或后端更新
 
-上游仓库的代码不会被本分支反向修改。在工作区干净时执行：
+首次获取完整项目：
+
+```bash
+git clone --branch integration/full-platform \
+  https://github.com/zhaocongcong994/echomere-backend.git \
+  echomere-platform
+cd echomere-platform
+git remote add front https://github.com/zhaocongcong994/echomere-front.git
+```
+
+上游仓库的代码不会被本分支反向修改。之后在工作区干净时执行：
 
 ```bash
 git fetch front main
