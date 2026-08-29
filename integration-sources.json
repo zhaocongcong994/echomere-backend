@@ -1,17 +1,24 @@
 {
+  "platform": {
+    "repository": "https://github.com/zhaocongcong994/echomere-backend.git",
+    "ref": "integration/full-platform",
+    "snapshotTag": "platform-snapshot-2026-08-29"
+  },
   "front": {
     "repository": "https://github.com/zhaocongcong994/echomere-front.git",
-    "ref": "feat/agent-integration",
-    "commit": "26f7ec08c04233278d4e965d5be0e72388784fca"
+    "importedCommit": "26f7ec08c04233278d4e965d5be0e72388784fca",
+    "importMode": "git-subtree-squash",
+    "upstreamRef": "main"
   },
   "backend": {
     "repository": "https://github.com/zhaocongcong994/echomere-backend.git",
-    "ref": "feat/agent-integration",
-    "commit": "ae9aff98e5edf1296d326fe6238ad5601ac1d174"
+    "importedCommit": "ae9aff98e5edf1296d326fe6238ad5601ac1d174",
+    "importMode": "git-subtree-squash",
+    "upstreamRef": "main"
   },
   "agent": {
     "repository": "local-import",
-    "ref": "main",
-    "commit": "30c56916f0c13128373789f5fe6b5194246a2b85"
+    "importedCommit": "30c56916f0c13128373789f5fe6b5194246a2b85",
+    "importMode": "git-subtree-squash"
   }
 }
