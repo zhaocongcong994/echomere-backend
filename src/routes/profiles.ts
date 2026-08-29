@@ -17,6 +17,7 @@ const createSchema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
   birthLocation: z.string().optional(),
+  timezone: z.string().optional(),
 });
 
 const updateSchema = z.object({
@@ -93,7 +94,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
       return;
     }
 
-    const { type, name, gender, year, month, day, hour, minute, birthLocation } =
+    const { type, name, gender, year, month, day, hour, minute, birthLocation, timezone } =
       parsed.data;
     const birthDateTime = new Date(year, month - 1, day, hour, minute);
     const bazi = getBaziProfile(birthDateTime, gender, { birthPlace: birthLocation });
@@ -117,6 +118,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
         gender,
         birthDateTime,
         birthLocation,
+        timezone,
         isPrimary: false,
         baziPillar: JSON.stringify(bazi),
       },
