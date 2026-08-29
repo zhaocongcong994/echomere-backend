@@ -1,0 +1,26 @@
+{
+  "name": "echomere-agent-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local-first, provider-agnostic agent runtime for Echomere.",
+  "scripts": {
+    "agent": "node src/cli.ts",
+    "server": "node src/server/start.ts",
+    "eval": "node src/evals/run-regression.ts",
+    "llm:check": "node src/diagnostics/check-llm.ts",
+    "production:check": "node src/diagnostics/check-production.ts",
+    "server:production": "npm run production:check && node src/server/start.ts",
+    "models": "node src/diagnostics/list-model-profiles.ts",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "redis": "^6.2.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3"
+  }
+}
