@@ -1,0 +1,51 @@
+services:
+  backend:
+    build:
+      context: ../echomere-backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=file:/data/dev.db
+      - JWT_SECRET=${JWT_SECRET:-__echomere_dev_secret__}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.moonshot.cn/v1}
+      - LLM_MODEL=${LLM_MODEL:-moonshot-v1-8k}
+      - PORT=3001
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://81.70.23.109:8080}
+    volumes:
+      - echomere-data:/data
+    networks:
+      - echomere-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../echomere-front
+      dockerfile: Dockerfile
+    environment:
+      - PORT=3000
+    networks:
+      - echomere-net
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - echomere-net
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+volumes:
+  echomere-data:
+    external: true
+
+networks:
+  echomere-net:
+    driver: bridge
