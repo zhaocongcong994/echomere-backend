@@ -53,3 +53,5 @@ docker compose -f compose.local.yml up --build
 - Agent：`http://localhost:4310`
 
 生产模板见 [deploy/production/README.md](./deploy/production/README.md)。
+
+上线前必须处理的依赖与密钥问题见 [SECURITY-NOTES.md](./SECURITY-NOTES.md)。
