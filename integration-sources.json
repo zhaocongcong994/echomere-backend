@@ -1,0 +1,17 @@
+{
+  "front": {
+    "repository": "https://github.com/zhaocongcong994/echomere-front.git",
+    "ref": "feat/agent-integration",
+    "commit": "26f7ec08c04233278d4e965d5be0e72388784fca"
+  },
+  "backend": {
+    "repository": "https://github.com/zhaocongcong994/echomere-backend.git",
+    "ref": "feat/agent-integration",
+    "commit": "ae9aff98e5edf1296d326fe6238ad5601ac1d174"
+  },
+  "agent": {
+    "repository": "local-import",
+    "ref": "main",
+    "commit": "30c56916f0c13128373789f5fe6b5194246a2b85"
+  }
+}
