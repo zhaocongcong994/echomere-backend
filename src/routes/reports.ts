@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getBaziProfile } from "../lib/bazi.js";
+import { buildDayunAnalysis, buildWuxingAnalysis } from "../lib/report-analysis.js";
 import { ensureProfileName } from "../lib/profile-name.js";
 import { authMiddleware, type AuthenticatedRequest } from "../middleware.js";
 
@@ -20,37 +21,20 @@ function buildReportContent(profile: {
     birthPlace: profile.birthLocation || undefined,
   });
 
-  const wuxingEntries = Object.entries(bazi.wuxing)
-    .sort((a, b) => b[1] - a[1])
-    .map(([element, score]) => ({ element, score }));
-
-  const dayMasterElement = bazi.dayMaster.wuxing;
-  const strongest = wuxingEntries[0]?.element;
-  const weakest = wuxingEntries[wuxingEntries.length - 1]?.element;
-
-  const wuxingAnalysis = {
-    scores: bazi.wuxing,
-    ranking: wuxingEntries,
-    dayMasterElement,
-    bodyStrength: bazi.bodyStrength,
-    xiYongShen: bazi.xiYongShen,
-    assessment: `${bazi.dayMaster.gan}属${dayMasterElement}，日主${bazi.bodyStrength}。五行分布中${strongest}最旺，${weakest}最弱。喜用神为${bazi.xiYongShen.xi.join("、")}，忌神为${bazi.xiYongShen.ji.join("、")}。`,
-  };
-
   return {
-    dayun: bazi.dayunJson,
-    wuxingAnalysis,
+    dayun: buildDayunAnalysis(bazi),
+    wuxingAnalysis: buildWuxingAnalysis(bazi),
   };
 }
 
-function buildSummary(profileName: string, content: ReturnType<typeof buildReportContent>) {
+function buildSummary(content: ReturnType<typeof buildReportContent>) {
   const dayMasterElement = content.wuxingAnalysis.dayMasterElement;
   const bodyStrength = content.wuxingAnalysis.bodyStrength;
   const topElements = content.wuxingAnalysis.ranking
     .slice(0, 3)
     .map((e) => `${e.element}${e.score}`)
     .join("，");
-  return `${profileName} · 日主${dayMasterElement}${bodyStrength} · 五行：${topElements}`;
+  return `日主${dayMasterElement}${bodyStrength} · 五行：${topElements}`;
 }
 
 router.get("/", authMiddleware, async (req: AuthenticatedRequest, res, next) => {
@@ -124,8 +108,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
     setImmediate(async () => {
       try {
         const content = buildReportContent(profile);
-        const namedProfile = ensureProfileName(profile);
-        const summary = buildSummary(namedProfile.name as string, content);
+        const summary = buildSummary(content);
         await prisma.report.update({
           where: { id: report.id },
           data: {
