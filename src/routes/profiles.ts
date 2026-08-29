@@ -17,6 +17,7 @@ const createSchema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
   birthLocation: z.string().optional(),
+  timezone: z.string().optional(),
 });
 
 const updateSchema = z.object({
@@ -29,6 +30,7 @@ const updateSchema = z.object({
   hour: z.number().int().min(0).max(23).optional(),
   minute: z.number().int().min(0).max(59).optional(),
   birthLocation: z.string().optional(),
+  timezone: z.string().optional(),
   isPrimary: z.boolean().optional(),
 });
 
@@ -92,7 +94,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
       return;
     }
 
-    const { type, name, gender, year, month, day, hour, minute, birthLocation } =
+    const { type, name, gender, year, month, day, hour, minute, birthLocation, timezone } =
       parsed.data;
     const birthDateTime = new Date(year, month - 1, day, hour, minute);
     const bazi = getBaziProfile(birthDateTime, gender, { birthPlace: birthLocation });
@@ -116,6 +118,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
         gender,
         birthDateTime,
         birthLocation,
+        timezone,
         isPrimary: false,
         baziPillar: JSON.stringify(bazi),
       },
@@ -147,6 +150,7 @@ router.patch("/:id", authMiddleware, async (req: AuthenticatedRequest, res, next
     if (parsed.data.name !== undefined) data.name = parsed.data.name;
     if (parsed.data.birthLocation !== undefined)
       data.birthLocation = parsed.data.birthLocation;
+    if (parsed.data.timezone !== undefined) data.timezone = parsed.data.timezone;
 
     if (parsed.data.type === "self") {
       const existingSelf = await prisma.profile.findFirst({

@@ -14,6 +14,7 @@ const schema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
   birthLocation: z.string().optional(),
+  timezone: z.string().optional(),
   gender: z.enum(["male", "female", "other"]),
   name: z.string().optional(),
 });
@@ -26,7 +27,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
       return;
     }
 
-    const { year, month, day, hour, minute, birthLocation, gender, name } = parsed.data;
+    const { year, month, day, hour, minute, birthLocation, timezone, gender, name } = parsed.data;
     const birthDateTime = new Date(year, month - 1, day, hour, minute);
     const profile = getBaziProfile(birthDateTime, gender, { birthPlace: birthLocation });
 
@@ -43,6 +44,7 @@ router.post("/", authMiddleware, async (req: AuthenticatedRequest, res, next) =>
         gender,
         birthDateTime,
         birthLocation,
+        timezone,
         isPrimary: true,
         baziPillar: JSON.stringify(profile),
       },
