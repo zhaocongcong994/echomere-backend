@@ -1,51 +1,74 @@
 import "dotenv/config";
-import express from "express";
-import cors from "cors";
-import authRoutes from "./routes/auth.js";
-import profileRoutes from "./routes/profile.js";
-import profilesRoutes from "./routes/profiles.js";
-import onboardingRoutes from "./routes/onboarding.js";
-import baziRoutes from "./routes/bazi.js";
-import conversationsRoutes from "./routes/conversations.js";
-import chatRoutes from "./routes/chat.js";
-import dailyFortuneRoutes from "./routes/dailyFortune.js";
-import subscriptionRoutes from "./routes/subscription.js";
-import { errorHandler } from "./middleware.js";
+import { validateBackendEnvironment } from "./config/environment.js";
 
-const app = express();
+const environment = validateBackendEnvironment();
+const [
+  { createApp },
+  { closeChatRateLimiter, chatRateLimitStore },
+  { backendLogger },
+  { prisma },
+] = await Promise.all([
+  import("./app.js"),
+  import("./lib/chat-rate-limit.js"),
+  import("./lib/observability.js"),
+  import("./lib/prisma.js"),
+]);
 
-const allowedOrigins = (
-  process.env.CORS_ORIGINS || "http://localhost:3000"
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+for (const warning of environment.warnings) {
+  backendLogger.warn("environment_warning", { message: warning });
+}
 
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: true,
-  })
-);
-app.use(express.json());
-
-app.use("/api/auth", authRoutes);
-app.use("/api/profile", profileRoutes);
-app.use("/api/profiles", profilesRoutes);
-app.use("/api/onboarding", onboardingRoutes);
-app.use("/api/bazi", baziRoutes);
-app.use("/api/conversations", conversationsRoutes);
-app.use("/api/chat", chatRoutes);
-app.use("/api/daily-fortune", dailyFortuneRoutes);
-app.use("/api/subscription", subscriptionRoutes);
-
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok" });
+const app = createApp();
+const server = app.listen(environment.port, () => {
+  backendLogger.info("server_started", {
+    port: environment.port,
+    nodeEnv: process.env.NODE_ENV || "development",
+    rateLimitStore: chatRateLimitStore(),
+  });
 });
 
-app.use(errorHandler);
-
-const PORT = Number(process.env.PORT) || 3001;
-app.listen(PORT, () => {
-  console.log(`[backend] Server running on port ${PORT}`);
+server.once("error", (error: NodeJS.ErrnoException) => {
+  backendLogger.error("server_start_failed", {
+    errorCode: error.code,
+    errorMessage: error.message,
+  });
+  process.exitCode = 1;
 });
+
+let shutdownStarted = false;
+const shutdown = (signal: NodeJS.Signals): void => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  backendLogger.info("server_shutdown_started", { signal });
+
+  const forceTimer = setTimeout(() => {
+    backendLogger.error("server_shutdown_forced", {
+      timeoutMs: environment.shutdownTimeoutMs,
+    });
+    server.closeAllConnections();
+    process.exitCode = 1;
+  }, environment.shutdownTimeoutMs);
+  forceTimer.unref();
+  server.closeIdleConnections();
+
+  server.close(async (error) => {
+    const results = await Promise.allSettled([
+      closeChatRateLimiter(),
+      prisma.$disconnect(),
+    ]);
+    clearTimeout(forceTimer);
+    const cleanupFailed = results.some((result) => result.status === "rejected");
+    if (error || cleanupFailed) {
+      backendLogger.error("server_shutdown_failed", {
+        ...(error ? { errorMessage: error.message } : {}),
+        cleanupFailed,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    backendLogger.info("server_shutdown_completed");
+  });
+};
+
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);

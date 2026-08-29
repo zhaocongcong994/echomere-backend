@@ -1,13 +1,14 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { prisma } from "./prisma.js";
+import { backendLogger } from "./observability.js";
 
 const JWT_SECRET =
   process.env.JWT_SECRET ||
   (() => {
-    console.warn(
-      "[backend] JWT_SECRET is not set. Using a development default. Do not use this in production!"
-    );
+    backendLogger.warn("development_jwt_secret_in_use", {
+      message: "JWT_SECRET is not set; using the development-only default.",
+    });
     return "__metasight_dev_secret__";
   })();
 

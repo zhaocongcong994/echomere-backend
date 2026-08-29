@@ -21,6 +21,7 @@ model User {
   messages             Message[]
   feedbacks            Feedback[]
   billingRecords       BillingRecord[]
+  hexagrams            Hexagram[]
 }
 
 model Profile {
@@ -52,6 +53,7 @@ model Conversation {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   messages      Message[]
+  hexagram      Hexagram?
 
   @@index([userId, updatedAt])
 }
@@ -66,9 +68,25 @@ model Message {
   content         String
   toolCalls       String?
   thinkingSummary String?
+  clientRequestId String?      @unique
+  agentRunId      String?      @unique
   createdAt       DateTime     @default(now())
 
   @@index([conversationId, createdAt])
+}
+
+model Hexagram {
+  id             String       @id @default(cuid())
+  conversationId String       @unique
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question       String
+  resultJson     String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([userId, createdAt])
 }
 
 model Feedback {
@@ -85,6 +103,7 @@ model Feedback {
 
 model BillingRecord {
   id             String   @id @default(cuid())
+  agentRunId     String?  @unique
   userId         String
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   type           String

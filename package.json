@@ -15,28 +15,30 @@
     "prestart": "npm run db:migrate",
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
-    "db:migrate": "prisma migrate deploy",
+    "db:migrate": "RUST_LOG=info prisma migrate deploy",
     "db:setup": "npm run prisma:generate && npm run db:migrate",
     "check": "npm run build && npm test",
     "test": "tsx --test src/lib/*.test.ts"
   },
   "dependencies": {
-    "@prisma/adapter-libsql": "^7.9.1",
-    "@prisma/client": "^7.9.1",
+    "@prisma/adapter-libsql": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "lunar-javascript": "^1.7.7",
+    "redis": "^6.2.1",
     "taibu-core": "^3.5.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@libsql/client": "^0.17.4",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^20.19.43",
-    "prisma": "^7.9.1",
+    "prisma": "^7.10.0",
     "tsx": "^4.23.12",
     "typescript": "^5"
   }

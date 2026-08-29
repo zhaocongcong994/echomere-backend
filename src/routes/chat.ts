@@ -1,290 +1,561 @@
-import { Router } from "express";
+import { randomUUID } from "node:crypto";
+import { Router, type NextFunction, type Response } from "express";
 import { z } from "zod";
+import {
+  AgentServiceClient,
+  AgentServiceError,
+  type AgentMode,
+  type AgentResultPayload,
+  type ResolvedAgentMode,
+} from "../lib/agent-client.js";
 import { prisma } from "../lib/prisma.js";
-import { formatBaziForAI, getBaziProfile, getYearlyFlow, type BaziPillar } from "../lib/bazi.js";
-import { castHexagram, formatLiuyaoForAI, type HexagramResult } from "../lib/liuyao.js";
-import { streamChat } from "../lib/llm.js";
-import { buildSystemPrompt, sanitizeUserQuestion } from "../lib/prompt-builder.js";
-import { authMiddleware, type AuthenticatedRequest } from "../middleware.js";
+import { sanitizeUserQuestion } from "../lib/prompt-builder.js";
+import { getChatRateLimiter } from "../lib/chat-rate-limit.js";
+import {
+  authMiddleware,
+  type AuthenticatedRequest,
+  userRateLimitMiddleware,
+} from "../middleware.js";
 
 const router = Router();
 
 const schema = z.object({
   mode: z.enum(["kanyun", "qingting", "wenshi", "suiyuan"]),
-  message: z.string().min(1),
+  message: z.string().min(1).max(4_000),
   conversationId: z.string().optional().nullable(),
+  clientRequestId: z.string().min(1).max(200).optional(),
+  profileId: z.string().min(1).optional(),
 });
 
-const currentYear = new Date().getFullYear();
-
-function extractYear(question: string): number {
-  const q = question.replace(/今年/, String(currentYear)).replace(/明年/, String(currentYear + 1));
-  const match = q.match(/(20\d{2})/);
-  return match ? Number(match[1]) : currentYear;
+const agentClient = new AgentServiceClient({
+  baseUrl: process.env.AGENT_SERVICE_URL || "http://127.0.0.1:4310",
+  sharedSecret: process.env.AGENT_SHARED_SECRET || undefined,
+  connectTimeoutMs: Number(process.env.AGENT_CONNECT_TIMEOUT_MS) || 10_000,
+});
+async function enforceChatRateLimit(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  await userRateLimitMiddleware(getChatRateLimiter())(req, res, next);
 }
 
-function buildKanYunContext(profile: BaziPillar, year: number) {
-  const flow = getYearlyFlow(profile, year);
-  return `${formatBaziForAI(profile, year)}\n\n【工具调用摘要】\n- 查询命盘：主命盘\n- 查询时间流：${year}年流年${flow.ganZhi}·${flow.shiShen}·${flow.naYin}`;
-}
-
-function buildWenShiContext(hexagram: HexagramResult) {
-  return `${formatLiuyaoForAI(hexagram)}\n\n【工具调用摘要】\n- 起卦服务：已为本问题生成并校验完整六爻盘`;
-}
-
-function routeSuiYuan(
-  question: string,
-  hasProfile: boolean
-): "kanyun" | "qingting" | "wenshi" {
-  const q = question.toLowerCase();
-  if (/压力|累|睡不着|焦虑|抑郁|难过|伤心|烦|委屈|想哭|情绪|心情/.test(q))
-    return "qingting";
-  if (/offer|选择|该不该|能不能|要不要|决定|选哪个|合适吗|可以吗|行吗|辞职|跳槽/.test(q))
-    return "wenshi";
-  if (/运势|今年|明年|财运|桃花|工作|事业|健康|适合|方向|贵人|命盘|八字/.test(q))
-    return hasProfile ? "kanyun" : "qingting";
-  return hasProfile ? "kanyun" : "qingting";
-}
-
-router.post("/stream", authMiddleware, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const userId = req.user!.userId;
+router.post(
+  "/stream",
+  authMiddleware,
+  enforceChatRateLimit,
+  async (req: AuthenticatedRequest, res, next) => {
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.format() });
       return;
     }
 
-    let { mode, conversationId } = parsed.data;
+    const userId = req.user!.userId;
+    const accessToken = readAccessToken(req);
     const message = sanitizeUserQuestion(parsed.data.message);
-
-    let profile: ReturnType<typeof getBaziProfile> | null = null;
-    let profileRecord = null;
-    if (mode === "kanyun" || mode === "suiyuan") {
-      profileRecord = await prisma.profile.findFirst({
-        where: { userId, isPrimary: true },
-      });
-      if (profileRecord) {
-        profile = getBaziProfile(profileRecord.birthDateTime, profileRecord.gender, {
-          birthPlace: profileRecord.birthLocation || undefined,
-        });
-        const stored = profileRecord.baziPillar ? JSON.parse(profileRecord.baziPillar) : null;
-        if (stored?.schemaVersion !== profile.schemaVersion) {
-          await prisma.profile.update({
-            where: { id: profileRecord.id },
-            data: { baziPillar: JSON.stringify(profile) },
-          });
-        }
-      }
-    }
-
-    let actualMode: typeof mode = mode;
-    let routeReason = "";
-    if (mode === "suiyuan") {
-      actualMode = routeSuiYuan(message, !!profile);
-      routeReason = `根据问题语义，已为你匹配「${
-        actualMode === "kanyun" ? "看运" : actualMode === "wenshi" ? "问事" : "倾听"
-      }」模式`;
-    }
-
-    if (actualMode === "kanyun" && !profile) {
-      res.status(400).json({ error: "NO_PROFILE", message: "看运需要先建立命盘档案" });
-      return;
-    }
-
-    let conversation = conversationId
-      ? await prisma.conversation.findFirst({
-          where: { id: conversationId, userId },
-        })
-      : null;
-
-    if (!conversation) {
-      conversation = await prisma.conversation.create({
-        data: {
-          userId,
-          mode: actualMode,
-          originalMode: mode === "suiyuan" ? mode : null,
-          title: message.slice(0, 30),
-        },
-      });
-    } else if (mode === "suiyuan") {
-      actualMode = conversation.mode as typeof actualMode;
-      routeReason = `沿用当前对话的「${
-        actualMode === "kanyun" ? "看运" : actualMode === "wenshi" ? "问事" : "倾听"
-      }」模式`;
-    }
-
-    const previousMessages = await prisma.message.findMany({
-      where: { conversationId: conversation.id },
-      orderBy: { createdAt: "desc" },
-      take: 8,
-    });
-
-    await prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        userId,
-        role: "user",
-        content: message,
-      },
-    });
-
-    await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { messageCount: { increment: 1 }, updatedAt: new Date() },
-    });
-
-    // 只保留最近创建的 20 条 active 对话，超出部分删除
-    const conversationsToKeep = await prisma.conversation.findMany({
-      where: { userId, status: "active" },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-      select: { id: true },
-    });
-    const keepIds = new Set(conversationsToKeep.map((c) => c.id));
-    if (!keepIds.has(conversation.id)) {
-      keepIds.add(conversation.id);
-    }
-    await prisma.conversation.deleteMany({
-      where: { userId, status: "active", id: { notIn: Array.from(keepIds) } },
-    });
-
-    let systemPrompt = "";
-    let userContent = message;
-    let toolCalls: Array<{ name: string; parameters?: unknown; result?: unknown }> = [];
-
-    if (actualMode === "kanyun") {
-      systemPrompt = buildSystemPrompt("kanyun");
-      const targetYear = extractYear(message);
-      userContent = buildKanYunContext(profile!, targetYear) + "\n\n【用户当前问题】\n" + message;
-      toolCalls = [
-        {
-          name: "查询命盘",
-          parameters: { profileId: profileRecord?.id, engine: profile!.engine },
-          result: { profile: profile!.canonicalJson, schemaVersion: profile!.schemaVersion },
-        },
-        {
-          name: "查询时间流",
-          parameters: { year: targetYear },
-          result: getYearlyFlow(profile!, targetYear),
-        },
-      ];
-    } else if (actualMode === "qingting") {
-      systemPrompt = buildSystemPrompt("qingting");
-      userContent = `[当前模式=倾听，locale=zh，首轮对话]\n\n用户倾诉：${message}`;
-    } else if (actualMode === "wenshi") {
-      systemPrompt = buildSystemPrompt("wenshi");
-
-      const previousAssistant = await prisma.message.findFirst({
-        where: { conversationId: conversation.id, role: "assistant" },
-        orderBy: { createdAt: "desc" },
-      });
-
-      let hexagram: HexagramResult | null = null;
-      if (previousAssistant?.toolCalls) {
-        try {
-          const calls = JSON.parse(previousAssistant.toolCalls);
-          const existing = calls.find(
-            (c: { name: string; result?: unknown }) => c.name === "起卦服务"
-          );
-          if (existing?.result?.schemaVersion === 2) hexagram = existing.result as HexagramResult;
-        } catch {
-          hexagram = null;
-        }
-      }
-
-      if (!hexagram) {
-        hexagram = await castHexagram(
-          previousAssistant ? conversation.title || message : message,
-          conversation.createdAt.getTime(),
-        );
-      }
-
-      userContent = buildWenShiContext(hexagram) + "\n\n【用户当前问题】\n" + message;
-      toolCalls = [
-        {
-          name: "起卦服务",
-          parameters: { question: message, seed: conversation.createdAt.getTime() },
-          result: hexagram,
-        },
-      ];
-    } else {
-      res.status(400).json({ error: "Unsupported mode" });
-      return;
-    }
-
-    const history = previousMessages
-      .reverse()
-      .filter((item) => item.role === "user" || item.role === "assistant")
-      .map((item) => ({ role: item.role as "user" | "assistant", content: item.content }));
-    const messages = [
-      { role: "system" as const, content: systemPrompt },
-      ...history,
-      { role: "user" as const, content: userContent },
-    ];
-
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-
-    const encoder = new TextEncoder();
-    let fullContent = "";
-    let thinkingSummary = "";
-
-    res.write(
-      encoder.encode(
-        `event: meta\ndata: ${JSON.stringify({
-          conversationId: conversation.id,
-          mode: actualMode,
-          originalMode: mode,
-          routeReason,
-          toolCalls,
-        })}\n\n`
-      )
-    );
+    const clientRequestId = parsed.data.clientRequestId || randomUUID();
 
     try {
-      for await (const chunk of streamChat(messages, { temperature: 0.7 })) {
-        fullContent += chunk.content;
-        if (chunk.reasoning) thinkingSummary += chunk.reasoning;
-        res.write(encoder.encode(`event: chunk\ndata: ${JSON.stringify(chunk)}\n\n`));
+      const prepared = await prepareConversation({
+        userId,
+        message,
+        requestedMode: parsed.data.mode,
+        conversationId: parsed.data.conversationId ?? undefined,
+        clientRequestId,
+      });
+      if (prepared.conflict) {
+        res.status(prepared.conflict.status).json({
+          error: prepared.conflict.code,
+          message: prepared.conflict.message,
+        });
+        return;
       }
-    } catch (e) {
-      console.error("[chat stream error]", e);
+
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      req.once("aborted", abort);
+      res.once("close", () => {
+        if (!res.writableEnded) abort();
+      });
+
+      startSSE(res);
+      let runId = "";
+      let fullContent = "";
+      let metaSent = false;
+      let terminalEventSeen = false;
+      const toolEvents: Array<Record<string, unknown>> = [];
+
+      try {
+        for await (const event of agentClient.stream(
+          {
+            userId,
+            conversationId: prepared.conversation.id,
+            clientRequestId,
+            mode: prepared.agentMode,
+            message,
+            ...(parsed.data.profileId ? { profileId: parsed.data.profileId } : {}),
+          },
+          {
+            accessToken,
+            signal: controller.signal,
+            ...(req.requestId ? { requestId: req.requestId } : {}),
+          },
+        )) {
+          runId = event.runId;
+
+          if (event.type === "run_started") {
+            const resolvedMode =
+              event.resolvedMode ?? normalizeResolvedMode(prepared.conversation.mode);
+            if (resolvedMode && prepared.conversation.mode !== resolvedMode) {
+              await prisma.conversation.update({
+                where: { id: prepared.conversation.id },
+                data: { mode: resolvedMode },
+              });
+              prepared.conversation.mode = resolvedMode;
+            }
+            writeSSE(res, "meta", {
+              conversationId: prepared.conversation.id,
+              clientRequestId,
+              runId,
+              mode: resolvedMode ?? prepared.conversation.mode,
+              originalMode: parsed.data.mode,
+              routeReason: event.routeReason ?? "",
+              toolCalls: [],
+              reusedRequest: prepared.reusedRequest,
+              requestId: req.requestId,
+            });
+            metaSent = true;
+            continue;
+          }
+
+          if (event.type === "tool_started" || event.type === "tool_completed") {
+            const toolEvent = { ...event };
+            toolEvents.push(toolEvent);
+            writeSSE(res, "tool", toolEvent);
+            continue;
+          }
+
+          if (event.type === "content_delta") {
+            fullContent += event.delta;
+            writeSSE(res, "chunk", { content: event.delta });
+            continue;
+          }
+
+          if (event.type === "run_waiting_input") {
+            terminalEventSeen = true;
+            writeSSE(res, "waiting_input", {
+              code: event.code,
+              message: event.message,
+              requiredFields: event.requiredFields,
+              runId,
+            });
+            continue;
+          }
+
+          if (event.type === "run_failed") {
+            terminalEventSeen = true;
+            writeSSE(res, "error", {
+              code: event.code,
+              message: event.message,
+              retryable: event.retryable,
+              runId,
+            });
+            continue;
+          }
+
+          if (event.type === "run_completed") {
+            terminalEventSeen = true;
+            if (!metaSent) {
+              writeSSE(res, "meta", {
+                conversationId: prepared.conversation.id,
+                clientRequestId,
+                runId,
+                mode: event.result.resolvedMode,
+                originalMode: parsed.data.mode,
+                routeReason: event.result.routeReason,
+                toolCalls: [],
+                reusedRequest: prepared.reusedRequest,
+                requestId: req.requestId,
+              });
+              metaSent = true;
+            }
+            if (!fullContent && event.result.contentMarkdown) {
+              fullContent = event.result.contentMarkdown;
+              writeSSE(res, "chunk", { content: fullContent });
+            }
+            const persisted = await persistAssistantResult({
+              userId,
+              conversationId: prepared.conversation.id,
+              clientRequestId,
+              runId,
+              result: event.result,
+              content: fullContent,
+              toolEvents,
+            });
+            writeSSE(res, "done", {
+              conversationId: prepared.conversation.id,
+              clientRequestId,
+              runId,
+              reused: event.reused === true || persisted.reused,
+              result: event.result,
+            });
+          }
+        }
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          terminalEventSeen = true;
+          const mapped = mapProxyError(error);
+          writeSSE(res, "error", mapped);
+        }
+      } finally {
+        req.off("aborted", abort);
+        if (!terminalEventSeen && !controller.signal.aborted && !res.writableEnded) {
+          writeSSE(res, "error", {
+            code: "agent_stream_incomplete",
+            message: "Agent stream ended before producing a terminal event.",
+            retryable: true,
+          });
+        }
+        if (!res.writableEnded && !res.destroyed) res.end();
+      }
+    } catch (error) {
+      next(error);
     }
+  },
+);
 
-    await prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        userId,
-        role: "assistant",
-        content: fullContent,
-        toolCalls: JSON.stringify(toolCalls),
-        thinkingSummary: thinkingSummary || "思考了片刻",
+async function prepareConversation(input: {
+  userId: string;
+  message: string;
+  requestedMode: AgentMode;
+  conversationId?: string;
+  clientRequestId: string;
+}): Promise<
+  | {
+      conflict: null;
+      conversation: {
+        id: string;
+        mode: string;
+        title: string | null;
+      };
+      agentMode: AgentMode;
+      reusedRequest: boolean;
+    }
+  | {
+      conflict: { status: number; code: string; message: string };
+    }
+> {
+  const previousRequest = await findPreparedRequest(input);
+  if (previousRequest) return previousRequest;
+
+  let conversation = input.conversationId
+    ? await prisma.conversation.findFirst({
+        where: { id: input.conversationId, userId: input.userId },
+      })
+    : null;
+  if (input.conversationId && !conversation) {
+    return {
+      conflict: {
+        status: 404,
+        code: "CONVERSATION_NOT_FOUND",
+        message: "Conversation was not found for the authenticated user.",
       },
-    });
-
-    await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { messageCount: { increment: 1 }, updatedAt: new Date() },
-    });
-
-    await prisma.billingRecord.create({
-      data: {
-        userId,
-        type: "interpretation",
-        amount: 0,
-        description: `${actualMode} 模式解读`,
-        conversationId: conversation.id,
-        status: "completed",
-      },
-    });
-
-    res.write(encoder.encode(`event: done\ndata: {}\n\n`));
-    res.end();
-  } catch (err) {
-    next(err);
+    };
   }
-});
+
+  if (
+    conversation &&
+    input.requestedMode !== "suiyuan" &&
+    normalizeResolvedMode(conversation.mode) &&
+    conversation.mode !== input.requestedMode
+  ) {
+    return {
+      conflict: {
+        status: 409,
+        code: "CONVERSATION_MODE_CONFLICT",
+        message: `Conversation is locked to ${conversation.mode} mode.`,
+      },
+    };
+  }
+
+  try {
+    conversation = await prisma.$transaction(async (transaction) => {
+      const selectedConversation =
+        conversation ??
+        (await transaction.conversation.create({
+          data: {
+            id: randomUUID(),
+            userId: input.userId,
+            mode: input.requestedMode,
+            originalMode:
+              input.requestedMode === "suiyuan" ? input.requestedMode : null,
+            title: input.message.slice(0, 30),
+          },
+        }));
+
+      await transaction.message.create({
+        data: {
+          conversationId: selectedConversation.id,
+          userId: input.userId,
+          role: "user",
+          content: input.message,
+          clientRequestId: input.clientRequestId,
+        },
+      });
+      const messageCount = await transaction.message.count({
+        where: { conversationId: selectedConversation.id },
+      });
+      await transaction.conversation.update({
+        where: { id: selectedConversation.id },
+        data: { messageCount, updatedAt: new Date() },
+      });
+      return selectedConversation;
+    });
+  } catch (error) {
+    const raced = await findPreparedRequest(input);
+    if (raced) return raced;
+    throw error;
+  }
+
+  await pruneActiveConversations(input.userId, conversation.id);
+
+  return {
+    conflict: null,
+    conversation,
+    agentMode: resolveAgentModeForConversation(
+      input.requestedMode,
+      conversation.mode,
+    ),
+    reusedRequest: false,
+  };
+}
+
+async function pruneActiveConversations(
+  userId: string,
+  currentConversationId: string,
+): Promise<void> {
+  const conversationsToKeep = await prisma.conversation.findMany({
+    where: { userId, status: "active" },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { id: true },
+  });
+  const keepIds = new Set(
+    conversationsToKeep.map((conversation) => conversation.id),
+  );
+  keepIds.add(currentConversationId);
+  await prisma.conversation.deleteMany({
+    where: {
+      userId,
+      status: "active",
+      id: { notIn: Array.from(keepIds) },
+    },
+  });
+}
+
+async function findPreparedRequest(input: {
+  userId: string;
+  message: string;
+  requestedMode: AgentMode;
+  clientRequestId: string;
+}): Promise<
+  | {
+      conflict: null;
+      conversation: { id: string; mode: string; title: string | null };
+      agentMode: AgentMode;
+      reusedRequest: boolean;
+    }
+  | { conflict: { status: number; code: string; message: string } }
+  | null
+> {
+  const previousRequest = await prisma.message.findUnique({
+    where: { clientRequestId: input.clientRequestId },
+    include: { conversation: true },
+  });
+  if (!previousRequest) return null;
+  if (
+    previousRequest.userId !== input.userId ||
+    previousRequest.content !== input.message
+  ) {
+    return {
+      conflict: {
+        status: 409,
+        code: "CLIENT_REQUEST_ID_CONFLICT",
+        message: "clientRequestId is already bound to a different request.",
+      },
+    };
+  }
+  if (
+    input.requestedMode !== "suiyuan" &&
+    normalizeResolvedMode(previousRequest.conversation.mode) &&
+    previousRequest.conversation.mode !== input.requestedMode
+  ) {
+    return {
+      conflict: {
+        status: 409,
+        code: "CLIENT_REQUEST_ID_CONFLICT",
+        message: "clientRequestId is already bound to a different mode.",
+      },
+    };
+  }
+  return {
+    conflict: null,
+    conversation: previousRequest.conversation,
+    agentMode: resolveAgentModeForConversation(
+      input.requestedMode,
+      previousRequest.conversation.mode,
+    ),
+    reusedRequest: true,
+  };
+}
+
+async function persistAssistantResult(input: {
+  userId: string;
+  conversationId: string;
+  clientRequestId: string;
+  runId: string;
+  result: AgentResultPayload;
+  content: string;
+  toolEvents: Array<Record<string, unknown>>;
+}): Promise<{ reused: boolean }> {
+  const toolCalls = [
+    {
+      name: "Agent执行",
+      parameters: {
+        clientRequestId: input.clientRequestId,
+        runId: input.runId,
+        mode: input.result.resolvedMode,
+        model: input.result.model,
+      },
+      result: {
+        evidenceRefs: input.result.evidenceRefs,
+        toolRunIds: input.result.toolRunIds,
+        safetyCategories: input.result.safetyCategories,
+        analysisPlan: input.result.analysisPlan,
+        quality: input.result.quality,
+        qualityRewriteCount: input.result.qualityRewriteCount,
+        qualityAttempts: input.result.qualityAttempts,
+        events: input.toolEvents,
+      },
+    },
+  ];
+
+  try {
+    const reused = await prisma.$transaction(async (transaction) => {
+      const existing = await transaction.message.findUnique({
+        where: { agentRunId: input.runId },
+      });
+      if (!existing) {
+        await transaction.message.create({
+          data: {
+            conversationId: input.conversationId,
+            userId: input.userId,
+            role: "assistant",
+            content: input.content,
+            agentRunId: input.runId,
+            toolCalls: JSON.stringify(toolCalls),
+            thinkingSummary: "由元见 Agent 完成路由、工具编排和安全校验",
+          },
+        });
+      }
+
+      const messageCount = await transaction.message.count({
+        where: { conversationId: input.conversationId },
+      });
+      await transaction.conversation.update({
+        where: { id: input.conversationId },
+        data: {
+          mode: input.result.resolvedMode,
+          messageCount,
+          updatedAt: new Date(),
+        },
+      });
+
+      const existingBilling = await transaction.billingRecord.findUnique({
+        where: { agentRunId: input.runId },
+      });
+      if (!existingBilling) {
+        await transaction.billingRecord.create({
+          data: {
+            agentRunId: input.runId,
+            userId: input.userId,
+            type: "interpretation",
+            amount: 0,
+            description: `${input.result.resolvedMode} 模式 Agent 解读`,
+            conversationId: input.conversationId,
+            status: "completed",
+          },
+        });
+      }
+      return Boolean(existing);
+    });
+    return { reused };
+  } catch (error) {
+    const [racedMessage, racedBilling] = await Promise.all([
+      prisma.message.findUnique({ where: { agentRunId: input.runId } }),
+      prisma.billingRecord.findUnique({ where: { agentRunId: input.runId } }),
+    ]);
+    if (racedMessage && racedBilling) return { reused: true };
+    throw error;
+  }
+}
+
+function resolveAgentModeForConversation(
+  requestedMode: AgentMode,
+  conversationMode: string,
+): AgentMode {
+  if (requestedMode !== "suiyuan") return requestedMode;
+  return normalizeResolvedMode(conversationMode) ?? "suiyuan";
+}
+
+function normalizeResolvedMode(value: string): ResolvedAgentMode | null {
+  return value === "kanyun" || value === "qingting" || value === "wenshi"
+    ? value
+    : null;
+}
+
+function readAccessToken(req: AuthenticatedRequest): string {
+  const value = req.headers.authorization;
+  if (!value?.startsWith("Bearer ")) {
+    throw new Error("Authenticated request is missing its bearer token.");
+  }
+  return value.slice(7);
+}
+
+function startSSE(res: Response): void {
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  res.write("retry: 3000\n\n");
+}
+
+function writeSSE(res: Response, event: string, data: unknown): void {
+  if (res.destroyed || res.writableEnded) return;
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function mapProxyError(error: unknown): {
+  code: string;
+  message: string;
+  retryable: boolean;
+} {
+  if (error instanceof AgentServiceError) {
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+    };
+  }
+  return {
+    code: "agent_proxy_failed",
+    message: error instanceof Error ? error.message : "Agent proxy failed.",
+    retryable: true,
+  };
+}
 
 export default router;
