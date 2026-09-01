@@ -1,6 +1,6 @@
-# Soothsayer Backend
+# Echomere Backend
 
-MetaSight 的 Express API。后端仓库自带 Prisma schema 和 SQLite migrations，可以独立克隆、构建和运行。
+Echomere 的 Express API。后端仓库自带 Prisma schema 和 SQLite migrations，可以独立克隆、构建和运行。
 
 ## 环境要求
 
