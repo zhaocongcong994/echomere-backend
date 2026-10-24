@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     environment:
       - DATABASE_URL=file:/data/dev.db
-      - JWT_SECRET=${JWT_SECRET:-__echomere_dev_secret__}
+      - JWT_SECRET=${JWT_SECRET:?请在部署环境的 .env 中设置 JWT_SECRET}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.moonshot.cn/v1}
       - LLM_MODEL=${LLM_MODEL:-moonshot-v1-8k}

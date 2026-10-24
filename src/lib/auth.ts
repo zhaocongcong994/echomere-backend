@@ -2,13 +2,19 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { prisma } from "./prisma.js";
 
+// JWT_SECRET 必须来自环境变量。生产环境缺失时直接启动失败，
+// 避免回退到任何可被猜测的默认值；开发环境则用进程级随机密钥兜底。
 const JWT_SECRET =
   process.env.JWT_SECRET ||
   (() => {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("JWT_SECRET must be set in production");
+    }
+    const ephemeral = crypto.randomBytes(32).toString("hex");
     console.warn(
-      "[backend] JWT_SECRET is not set. Using a development default. Do not use this in production!"
+      "[backend] JWT_SECRET is not set. Using an ephemeral random secret for this process only."
     );
-    return "__metasight_dev_secret__";
+    return ephemeral;
   })();
 
 export interface JwtPayload {
