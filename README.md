@@ -169,9 +169,9 @@ npm run prisma:generate
 
 可以。两者独立构建：后端 `npm run build && npm start`（或 Docker），前端 `npm run build` 后托管静态产物，并把 `/api` 反向代理到后端。
 
-**Q: `frontend/` 出现在 `git status` 里是一个未跟踪目录？**
+**Q: 前后端是同一个 Git 仓库吗？**
 
-`backend/` 与 `frontend/` 是两个独立的 Git 仓库（前端仓库嵌套在后端仓库内）。这是合并后的预期结构；如需合并为一个仓库，先移除 `frontend/.git` 再统一提交。
+是。合并后 `backend/` 与 `frontend/` 同属一个 Git 仓库（原前端仓库 `echomere-front` 的提交历史仍保留在其远端）。两者仍是独立的 npm 包，可以单独构建和部署。
 
 **Q: 数据库文件在哪？**
 
